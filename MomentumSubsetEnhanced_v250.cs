@@ -2707,6 +2707,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 for (int i = lastTradeCount; i < newTradeCount; i++)
                 {
                     Trade processedTrade = SystemPerformance.AllTrades[i];
+                    if (processedTrade == null)
+                    {
+                        Print(string.Format("[WARN] Null trade at index {0} in SystemPerformance.AllTrades — skipping.", i));
+                        continue;
+                    }
                     RecordTradeResult(processedTrade, lastEntryContext, lastEntryVolRegime, lastEntryStackRecency, lastEntryClusterCount);
 
                     if (UseTradeLogging && !string.IsNullOrEmpty(pendingTradeLog) && i == newTradeCount - 1)
@@ -3186,7 +3191,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             #endregion
 
             #region Imbalance Baseline Update
-            UpdateImbalanceBaselines(maxBullishStack, validAvgBullishImbVol, domVolLongPercent, validBullishRatio, escapeLongTicks);
+            // When maxBullishStack == 0, maxBullishStackTopTick is 0, so escapeLongTicks would equal
+            // Close[1]/TickSize (~20 000 ticks for ES). Recording that in the buffer every no-stack bar
+            // would destroy the adaptive escape baseline. Use 0 on no-stack bars, matching the intent of
+            // all other buffers which naturally receive 0 when there is no bullish stack.
+            double escapeLongTicksForBuffer = maxBullishStack > 0 ? escapeLongTicks : 0.0;
+            UpdateImbalanceBaselines(maxBullishStack, validAvgBullishImbVol, domVolLongPercent, validBullishRatio, escapeLongTicksForBuffer);
             #endregion
 
             #region Market Regime Detection
