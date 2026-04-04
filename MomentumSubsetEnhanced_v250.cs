@@ -1316,6 +1316,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             return (value - baseline) / stdDev;
         }
 
+        // Caps imbalance ratio before storing in rolling buffers or computing z-scores.
+        // validBullishRatio can be double.MaxValue when the comparison side is zero (perfect imbalance).
+        // Without capping, a single infinite-ratio bar would wildly distort the rolling baseline.
+        // 50.0 is chosen as a practical ceiling: real actionable ratios rarely exceed 20-30 in live markets.
         private double CapBullishRatio(double ratio)
         {
             return Math.Min(ratio, 50.0);
@@ -4158,7 +4162,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                     lastEntryMaxStackZScore = adaptiveReady ? GetZScore(maxBullishStack, adaptiveMaxStackBaseline, adaptiveMaxStackStdDev) : 0;
                     lastEntryBullRatioZScore = adaptiveReady ? GetZScore(imbRatioCapped, adaptiveBullRatioBaseline, adaptiveBullRatioStdDev) : 0;
                     lastEntryEscapeZScore = adaptiveReady ? GetZScore(escapeLongTicks, adaptiveEscapeBaseline, adaptiveEscapeStdDev) : 0;
-                    lastEntryCompositeImbScore = (lastEntryImbVolZScore + lastEntryDomVolPctZScore + lastEntryMaxStackZScore + lastEntryBullRatioZScore + lastEntryEscapeZScore) / 5.0;
+                    // Composite: equal-weighted average of the 5 imbalance z-scores (ImbVol, DomVol, Stack, Ratio, Escape)
+                    const int imbZScoreComponentCount = 5;
+                    lastEntryCompositeImbScore = (lastEntryImbVolZScore + lastEntryDomVolPctZScore + lastEntryMaxStackZScore + lastEntryBullRatioZScore + lastEntryEscapeZScore) / imbZScoreComponentCount;
 
                     // Imbalance baseline snapshots
                     lastEntryImbVolBaseline = adaptiveImbVolBaseline;
