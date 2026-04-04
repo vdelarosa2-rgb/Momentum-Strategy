@@ -212,7 +212,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double[] domVolPctBuffer;
         private double[] maxStackSizeBuffer;
         private double[] bullishRatioBuffer;
-        private double[] escapeTicsBuffer;
+        private double[] escapeTicksBuffer;
         private int imbBufferIndex = 0;
         private double adaptiveImbVolBaseline = 0;
         private double adaptiveImbVolStdDev = 0;
@@ -808,7 +808,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 domVolPctBuffer = new double[adaptiveLookback];
                 maxStackSizeBuffer = new double[adaptiveLookback];
                 bullishRatioBuffer = new double[adaptiveLookback];
-                escapeTicsBuffer = new double[adaptiveLookback];
+                escapeTicksBuffer = new double[adaptiveLookback];
                 recentTradeResults = new Queue<TradeResult>();
                 volumeByHour = new Dictionary<int, List<double>>();
                 recentBullStacks = new List<StackInfo>();
@@ -941,7 +941,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (domVolPctBuffer != null) Array.Clear(domVolPctBuffer, 0, domVolPctBuffer.Length);
             if (maxStackSizeBuffer != null) Array.Clear(maxStackSizeBuffer, 0, maxStackSizeBuffer.Length);
             if (bullishRatioBuffer != null) Array.Clear(bullishRatioBuffer, 0, bullishRatioBuffer.Length);
-            if (escapeTicsBuffer != null) Array.Clear(escapeTicsBuffer, 0, escapeTicsBuffer.Length);
+            if (escapeTicksBuffer != null) Array.Clear(escapeTicksBuffer, 0, escapeTicksBuffer.Length);
             if (volumeByHour != null) volumeByHour.Clear();
             if (recentTradeResults != null) recentTradeResults.Clear();
             
@@ -1108,17 +1108,17 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
-        private void UpdateImbalanceBaselines(int bestBullStack, double avgBullImbVol, double domVolPct, double bullRatio, double escapeTicks)
+        private void UpdateImbalanceBaselines(int maxBullishStack, double avgBullImbVol, double domVolPct, double bullRatio, double escapeTicks)
         {
             if (CurrentBar < 3) return;
 
-            double cappedRatio = Math.Min(bullRatio == double.MaxValue ? 50.0 : bullRatio, 50.0);
+            double cappedRatio = CapBullishRatio(bullRatio);
 
             imbVolBuffer[imbBufferIndex] = avgBullImbVol;
             domVolPctBuffer[imbBufferIndex] = domVolPct;
-            maxStackSizeBuffer[imbBufferIndex] = bestBullStack;
+            maxStackSizeBuffer[imbBufferIndex] = maxBullishStack;
             bullishRatioBuffer[imbBufferIndex] = cappedRatio;
-            escapeTicsBuffer[imbBufferIndex] = escapeTicks;
+            escapeTicksBuffer[imbBufferIndex] = escapeTicks;
 
             imbBufferIndex = (imbBufferIndex + 1) % adaptiveLookback;
 
@@ -1131,7 +1131,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     domVolPctSum += domVolPctBuffer[i];
                     stackSizeSum += maxStackSizeBuffer[i];
                     bullRatioSum += bullishRatioBuffer[i];
-                    escapeSum += escapeTicsBuffer[i];
+                    escapeSum += escapeTicksBuffer[i];
                 }
                 adaptiveImbVolBaseline = imbVolSum / adaptiveLookback;
                 adaptiveDomVolPctBaseline = domVolPctSum / adaptiveLookback;
@@ -1142,12 +1142,16 @@ namespace NinjaTrader.NinjaScript.Strategies
                 double sumSqImbVol = 0, sumSqDomVolPct = 0, sumSqStack = 0, sumSqBullRatio = 0, sumSqEscape = 0;
                 for (int i = 0; i < adaptiveLookback; i++)
                 {
-                    double d;
-                    d = imbVolBuffer[i] - adaptiveImbVolBaseline; sumSqImbVol += d * d;
-                    d = domVolPctBuffer[i] - adaptiveDomVolPctBaseline; sumSqDomVolPct += d * d;
-                    d = maxStackSizeBuffer[i] - adaptiveMaxStackBaseline; sumSqStack += d * d;
-                    d = bullishRatioBuffer[i] - adaptiveBullRatioBaseline; sumSqBullRatio += d * d;
-                    d = escapeTicsBuffer[i] - adaptiveEscapeBaseline; sumSqEscape += d * d;
+                    double imbVolDiff = imbVolBuffer[i] - adaptiveImbVolBaseline;
+                    double domVolPctDiff = domVolPctBuffer[i] - adaptiveDomVolPctBaseline;
+                    double stackDiff = maxStackSizeBuffer[i] - adaptiveMaxStackBaseline;
+                    double bullRatioDiff = bullishRatioBuffer[i] - adaptiveBullRatioBaseline;
+                    double escapeDiff = escapeTicksBuffer[i] - adaptiveEscapeBaseline;
+                    sumSqImbVol += imbVolDiff * imbVolDiff;
+                    sumSqDomVolPct += domVolPctDiff * domVolPctDiff;
+                    sumSqStack += stackDiff * stackDiff;
+                    sumSqBullRatio += bullRatioDiff * bullRatioDiff;
+                    sumSqEscape += escapeDiff * escapeDiff;
                 }
                 adaptiveImbVolStdDev = Math.Sqrt(sumSqImbVol / adaptiveLookback);
                 adaptiveDomVolPctStdDev = Math.Sqrt(sumSqDomVolPct / adaptiveLookback);
@@ -1310,6 +1314,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (stdDev <= 0) return 0;
             return (value - baseline) / stdDev;
+        }
+
+        private double CapBullishRatio(double ratio)
+        {
+            return Math.Min(ratio, 50.0);
         }
 
         private VolatilityRegime GetVolatilityRegime(double currentVolume)
@@ -4143,7 +4152,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     lastEntryKeyLevelGatePass = keyLevelGatePass;
 
                     // Imbalance adaptive z-scores
-                    double imbRatioCapped = Math.Min(validBullishRatio == double.MaxValue ? 50.0 : validBullishRatio, 50.0);
+                    double imbRatioCapped = CapBullishRatio(validBullishRatio);
                     lastEntryImbVolZScore = adaptiveReady ? GetZScore(validAvgBullishImbVol, adaptiveImbVolBaseline, adaptiveImbVolStdDev) : 0;
                     lastEntryDomVolPctZScore = adaptiveReady ? GetZScore(domVolLongPercent, adaptiveDomVolPctBaseline, adaptiveDomVolPctStdDev) : 0;
                     lastEntryMaxStackZScore = adaptiveReady ? GetZScore(maxBullishStack, adaptiveMaxStackBaseline, adaptiveMaxStackStdDev) : 0;
