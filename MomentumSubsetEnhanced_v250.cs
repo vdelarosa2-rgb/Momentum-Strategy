@@ -207,6 +207,24 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double adaptiveDeltaBaseline = 0;
         private double adaptiveDeltaStdDev = 0;
 
+        // Rolling imbalance baseline buffers
+        private double[] imbVolBuffer;
+        private double[] domVolPctBuffer;
+        private double[] maxStackSizeBuffer;
+        private double[] bullishRatioBuffer;
+        private double[] escapeTicsBuffer;
+        private int imbBufferIndex = 0;
+        private double adaptiveImbVolBaseline = 0;
+        private double adaptiveImbVolStdDev = 0;
+        private double adaptiveDomVolPctBaseline = 0;
+        private double adaptiveDomVolPctStdDev = 0;
+        private double adaptiveMaxStackBaseline = 0;
+        private double adaptiveMaxStackStdDev = 0;
+        private double adaptiveBullRatioBaseline = 0;
+        private double adaptiveBullRatioStdDev = 0;
+        private double adaptiveEscapeBaseline = 0;
+        private double adaptiveEscapeStdDev = 0;
+
         private double sessionHigh = double.MinValue;
         private double sessionLow = double.MaxValue;
         private bool sessionInitialized = false;
@@ -439,6 +457,26 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int lastClosedTradeMaxTrailStep = -1;
         private double lastClosedTradeFinalStopPrice = 0;
         private double lastClosedTradeHighestSeenPrice = 0;
+
+        // Imbalance adaptive z-score snapshots
+        private double lastEntryImbVolZScore = 0;
+        private double lastEntryDomVolPctZScore = 0;
+        private double lastEntryMaxStackZScore = 0;
+        private double lastEntryBullRatioZScore = 0;
+        private double lastEntryEscapeZScore = 0;
+        private double lastEntryCompositeImbScore = 0;
+
+        // Imbalance baseline snapshots at trade entry
+        private double lastEntryImbVolBaseline = 0;
+        private double lastEntryImbVolStdDev = 0;
+        private double lastEntryDomVolPctBaseline = 0;
+        private double lastEntryDomVolPctStdDev = 0;
+        private double lastEntryMaxStackBaseline = 0;
+        private double lastEntryMaxStackStdDev = 0;
+        private double lastEntryBullRatioBaseline = 0;
+        private double lastEntryBullRatioStdDev = 0;
+        private double lastEntryEscapeBaseline = 0;
+        private double lastEntryEscapeStdDev = 0;
 
         #endregion
 
@@ -766,6 +804,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 volumeBuffer = new double[adaptiveLookback];
                 deltaBuffer = new double[adaptiveLookback];
                 barRangeBuffer = new double[adaptiveLookback];
+                imbVolBuffer = new double[adaptiveLookback];
+                domVolPctBuffer = new double[adaptiveLookback];
+                maxStackSizeBuffer = new double[adaptiveLookback];
+                bullishRatioBuffer = new double[adaptiveLookback];
+                escapeTicsBuffer = new double[adaptiveLookback];
                 recentTradeResults = new Queue<TradeResult>();
                 volumeByHour = new Dictionary<int, List<double>>();
                 recentBullStacks = new List<StackInfo>();
@@ -888,11 +931,17 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             bufferIndex = 0;
             barRangeBufferIndex = 0;
+            imbBufferIndex = 0;
             adaptiveReady = false;
             barRangeBufferReady = false;
             if (volumeBuffer != null) Array.Clear(volumeBuffer, 0, volumeBuffer.Length);
             if (deltaBuffer != null) Array.Clear(deltaBuffer, 0, deltaBuffer.Length);
             if (barRangeBuffer != null) Array.Clear(barRangeBuffer, 0, barRangeBuffer.Length);
+            if (imbVolBuffer != null) Array.Clear(imbVolBuffer, 0, imbVolBuffer.Length);
+            if (domVolPctBuffer != null) Array.Clear(domVolPctBuffer, 0, domVolPctBuffer.Length);
+            if (maxStackSizeBuffer != null) Array.Clear(maxStackSizeBuffer, 0, maxStackSizeBuffer.Length);
+            if (bullishRatioBuffer != null) Array.Clear(bullishRatioBuffer, 0, bullishRatioBuffer.Length);
+            if (escapeTicsBuffer != null) Array.Clear(escapeTicsBuffer, 0, escapeTicsBuffer.Length);
             if (volumeByHour != null) volumeByHour.Clear();
             if (recentTradeResults != null) recentTradeResults.Clear();
             
@@ -901,6 +950,16 @@ namespace NinjaTrader.NinjaScript.Strategies
             adaptiveDeltaBaseline = 0;
             adaptiveDeltaStdDev = 0;
             avgBarRange = 0;
+            adaptiveImbVolBaseline = 0;
+            adaptiveImbVolStdDev = 0;
+            adaptiveDomVolPctBaseline = 0;
+            adaptiveDomVolPctStdDev = 0;
+            adaptiveMaxStackBaseline = 0;
+            adaptiveMaxStackStdDev = 0;
+            adaptiveBullRatioBaseline = 0;
+            adaptiveBullRatioStdDev = 0;
+            adaptiveEscapeBaseline = 0;
+            adaptiveEscapeStdDev = 0;
         }
 
         private void ResetDailyStats()
@@ -1046,6 +1105,55 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
                 adaptiveVolumeStdDev = Math.Sqrt(sumSqVol / adaptiveLookback);
                 adaptiveDeltaStdDev = Math.Sqrt(sumSqDelta / adaptiveLookback);
+            }
+        }
+
+        private void UpdateImbalanceBaselines(int bestBullStack, double avgBullImbVol, double domVolPct, double bullRatio, double escapeTicks)
+        {
+            if (CurrentBar < 3) return;
+
+            double cappedRatio = Math.Min(bullRatio == double.MaxValue ? 50.0 : bullRatio, 50.0);
+
+            imbVolBuffer[imbBufferIndex] = avgBullImbVol;
+            domVolPctBuffer[imbBufferIndex] = domVolPct;
+            maxStackSizeBuffer[imbBufferIndex] = bestBullStack;
+            bullishRatioBuffer[imbBufferIndex] = cappedRatio;
+            escapeTicsBuffer[imbBufferIndex] = escapeTicks;
+
+            imbBufferIndex = (imbBufferIndex + 1) % adaptiveLookback;
+
+            if (CurrentBar >= adaptiveLookback)
+            {
+                double imbVolSum = 0, domVolPctSum = 0, stackSizeSum = 0, bullRatioSum = 0, escapeSum = 0;
+                for (int i = 0; i < adaptiveLookback; i++)
+                {
+                    imbVolSum += imbVolBuffer[i];
+                    domVolPctSum += domVolPctBuffer[i];
+                    stackSizeSum += maxStackSizeBuffer[i];
+                    bullRatioSum += bullishRatioBuffer[i];
+                    escapeSum += escapeTicsBuffer[i];
+                }
+                adaptiveImbVolBaseline = imbVolSum / adaptiveLookback;
+                adaptiveDomVolPctBaseline = domVolPctSum / adaptiveLookback;
+                adaptiveMaxStackBaseline = stackSizeSum / adaptiveLookback;
+                adaptiveBullRatioBaseline = bullRatioSum / adaptiveLookback;
+                adaptiveEscapeBaseline = escapeSum / adaptiveLookback;
+
+                double sumSqImbVol = 0, sumSqDomVolPct = 0, sumSqStack = 0, sumSqBullRatio = 0, sumSqEscape = 0;
+                for (int i = 0; i < adaptiveLookback; i++)
+                {
+                    double d;
+                    d = imbVolBuffer[i] - adaptiveImbVolBaseline; sumSqImbVol += d * d;
+                    d = domVolPctBuffer[i] - adaptiveDomVolPctBaseline; sumSqDomVolPct += d * d;
+                    d = maxStackSizeBuffer[i] - adaptiveMaxStackBaseline; sumSqStack += d * d;
+                    d = bullishRatioBuffer[i] - adaptiveBullRatioBaseline; sumSqBullRatio += d * d;
+                    d = escapeTicsBuffer[i] - adaptiveEscapeBaseline; sumSqEscape += d * d;
+                }
+                adaptiveImbVolStdDev = Math.Sqrt(sumSqImbVol / adaptiveLookback);
+                adaptiveDomVolPctStdDev = Math.Sqrt(sumSqDomVolPct / adaptiveLookback);
+                adaptiveMaxStackStdDev = Math.Sqrt(sumSqStack / adaptiveLookback);
+                adaptiveBullRatioStdDev = Math.Sqrt(sumSqBullRatio / adaptiveLookback);
+                adaptiveEscapeStdDev = Math.Sqrt(sumSqEscape / adaptiveLookback);
             }
         }
 
@@ -2340,6 +2448,17 @@ namespace NinjaTrader.NinjaScript.Strategies
             GetFollowThroughStats(out ftRate, out ftAvgMfe, out ftAvgMae, out ftSampleCount);
             Print(string.Format("[FOLLOW-THROUGH] Rate: {0:P0} | AvgMFE: {1:F1}T | AvgMAE: {2:F1}T | Samples: {3}",
                 ftRate, ftAvgMfe, ftAvgMae, ftSampleCount));
+
+            Print(string.Format("[ADAPTIVE-BASELINES] Vol: {0:F0}±{1:F0} | Delta: {2:F0}±{3:F0} | Range: {4:F2}",
+                adaptiveVolumeBaseline, adaptiveVolumeStdDev, adaptiveDeltaBaseline, adaptiveDeltaStdDev, avgBarRange));
+
+            Print(string.Format("[IMB-BASELINES-EOD] ImbVol: {0:F1}±{1:F1} | DomVol: {2:F1}±{3:F1}% | Stack: {4:F1}±{5:F1} | Ratio: {6:F1}±{7:F1} | Escape: {8:F1}±{9:F1}T | Ready: {10}",
+                adaptiveImbVolBaseline, adaptiveImbVolStdDev,
+                adaptiveDomVolPctBaseline, adaptiveDomVolPctStdDev,
+                adaptiveMaxStackBaseline, adaptiveMaxStackStdDev,
+                adaptiveBullRatioBaseline, adaptiveBullRatioStdDev,
+                adaptiveEscapeBaseline, adaptiveEscapeStdDev,
+                adaptiveReady));
                 
             if (UseShadowDailyProfitTracker)
             {
@@ -2492,6 +2611,16 @@ namespace NinjaTrader.NinjaScript.Strategies
             string exitName = (lastTrade.Exit != null && !string.IsNullOrEmpty(lastTrade.Exit.Name)) ? lastTrade.Exit.Name : "N/A";
             Print(string.Format("     [EXIT-MGMT] HoldSecs: {0:F1} | ExitName: {1} | BETriggered: {2} | TrailTriggered: {3} | MaxTrailStep: {4} | FinalStop: {5:F2} | PeakPx: {6:F2}",
                 holdSeconds, exitName, lastClosedTradeBreakEvenTriggered, lastClosedTradeTrailTriggered, lastClosedTradeMaxTrailStep, lastClosedTradeFinalStopPrice, lastClosedTradeHighestSeenPrice));
+
+            Print(string.Format("     [IMB-ADAPTIVE] ImbVolZ: {0:F2} | DomVolZ: {1:F2} | StackZ: {2:F2} | RatioZ: {3:F2} | EscapeZ: {4:F2} | Composite: {5:F2}",
+                lastEntryImbVolZScore, lastEntryDomVolPctZScore, lastEntryMaxStackZScore, lastEntryBullRatioZScore, lastEntryEscapeZScore, lastEntryCompositeImbScore));
+
+            Print(string.Format("     [IMB-BASELINES] ImbVol: {0:F1}±{1:F1} | DomVol: {2:F1}±{3:F1}% | Stack: {4:F1}±{5:F1} | Ratio: {6:F1}±{7:F1} | Escape: {8:F1}±{9:F1}T",
+                lastEntryImbVolBaseline, lastEntryImbVolStdDev,
+                lastEntryDomVolPctBaseline, lastEntryDomVolPctStdDev,
+                lastEntryMaxStackBaseline, lastEntryMaxStackStdDev,
+                lastEntryBullRatioBaseline, lastEntryBullRatioStdDev,
+                lastEntryEscapeBaseline, lastEntryEscapeStdDev));
 
             Print("=========================================================================");
         }
@@ -3041,6 +3170,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             int cAdvLong = bullishImbalanceCount - bearishImbalanceCount;
             double dAdvLong = bullishImbalanceDeltaSum - bearishImbalanceDeltaSum;
+            #endregion
+
+            #region Imbalance Baseline Update
+            UpdateImbalanceBaselines(maxBullishStack, validAvgBullishImbVol, domVolLongPercent, validBullishRatio, escapeLongTicks);
             #endregion
 
             #region Market Regime Detection
@@ -4008,6 +4141,27 @@ namespace NinjaTrader.NinjaScript.Strategies
                     lastEntryNearPML = nearPML;
                     lastEntryNearPOC = nearPOC;
                     lastEntryKeyLevelGatePass = keyLevelGatePass;
+
+                    // Imbalance adaptive z-scores
+                    double imbRatioCapped = Math.Min(validBullishRatio == double.MaxValue ? 50.0 : validBullishRatio, 50.0);
+                    lastEntryImbVolZScore = adaptiveReady ? GetZScore(validAvgBullishImbVol, adaptiveImbVolBaseline, adaptiveImbVolStdDev) : 0;
+                    lastEntryDomVolPctZScore = adaptiveReady ? GetZScore(domVolLongPercent, adaptiveDomVolPctBaseline, adaptiveDomVolPctStdDev) : 0;
+                    lastEntryMaxStackZScore = adaptiveReady ? GetZScore(maxBullishStack, adaptiveMaxStackBaseline, adaptiveMaxStackStdDev) : 0;
+                    lastEntryBullRatioZScore = adaptiveReady ? GetZScore(imbRatioCapped, adaptiveBullRatioBaseline, adaptiveBullRatioStdDev) : 0;
+                    lastEntryEscapeZScore = adaptiveReady ? GetZScore(escapeLongTicks, adaptiveEscapeBaseline, adaptiveEscapeStdDev) : 0;
+                    lastEntryCompositeImbScore = (lastEntryImbVolZScore + lastEntryDomVolPctZScore + lastEntryMaxStackZScore + lastEntryBullRatioZScore + lastEntryEscapeZScore) / 5.0;
+
+                    // Imbalance baseline snapshots
+                    lastEntryImbVolBaseline = adaptiveImbVolBaseline;
+                    lastEntryImbVolStdDev = adaptiveImbVolStdDev;
+                    lastEntryDomVolPctBaseline = adaptiveDomVolPctBaseline;
+                    lastEntryDomVolPctStdDev = adaptiveDomVolPctStdDev;
+                    lastEntryMaxStackBaseline = adaptiveMaxStackBaseline;
+                    lastEntryMaxStackStdDev = adaptiveMaxStackStdDev;
+                    lastEntryBullRatioBaseline = adaptiveBullRatioBaseline;
+                    lastEntryBullRatioStdDev = adaptiveBullRatioStdDev;
+                    lastEntryEscapeBaseline = adaptiveEscapeBaseline;
+                    lastEntryEscapeStdDev = adaptiveEscapeStdDev;
 
                     // Build Trade Log
                     string localTradeLog = "";
