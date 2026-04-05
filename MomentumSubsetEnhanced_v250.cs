@@ -383,6 +383,14 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool lastEntryDisableBarVolumeFilters = false;
         private string lastEntrySessionAxis = "";
         private string lastEntrySpatialPair = "";
+        private bool lastEntryCeilingAboveVAHBlocked = false;
+
+        // Spread & Book Depth telemetry
+        private double lastEntrySignalSpread = 0.0;
+        private double lastEntryAvgSpread = 0.0;
+        private double lastEntryMaxSpread = 0.0;
+        private double lastEntryBookBidVol = 0.0;
+        private double lastEntryBookAskVol = 0.0;
 
         private double lastEntrySignalPrice = 0;
         private double lastEntrySessionHigh = 0;
@@ -629,6 +637,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 UseAdaptiveContextMatrix = false;
                 AutoDisableBarVolumeFiltersOnConstantVolume = true;
                 ShadowMatrixMode = false;
+                UseCeilingAboveVAHBlock = false;
                 AdaptiveBasementMinDomVol = 5.0;
                 AdaptiveBasementMinEscape = -10.0;
                 AdaptiveBasementRequireDeltaImprovement = true;
@@ -2288,6 +2297,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 UseSessionContextFilter, Session_AllowLowRev, Session_AllowLowerCont, Session_AllowMidRange, Session_AllowUpperCont, Session_AllowHighBo));
             Print(string.Format("     ADAPT MATRIX    : Use={0} | ConstVolAutoOff={1} | ShadowMode={2} | CeilingTrapAbs%={3:F1} | Pair/Family thresholds are internally calibrated by context and bar type",
                 UseAdaptiveContextMatrix, AutoDisableBarVolumeFiltersOnConstantVolume, ShadowMatrixMode, AdaptiveCeilingTrapAbsorptionPct));
+            Print(string.Format("     CEILING VA BLOCK : UseCeilingAboveVAHBlock={0}", UseCeilingAboveVAHBlock));
             Print(string.Format("     RANGE BAR ADAPT : Use={0} | Fast<={1:F0}s | Slow>={2:F0}s | ContClose>={3:P0} | SlowClose>={4:P0} | MaxOverlap<={5:P0} | RejWick>={6:P0}",
                 UseRangeBarAdaptation, RangeFastBarSecsThreshold, RangeSlowBarSecsThreshold, RangeContinuationCloseMinPct, RangeStrongSlowBarCloseMinPct, RangeMaxOverlapPct, RangeMinRejectionWickPct));
             Print(string.Format("     DELTA VELOCITY  : Use={0} | Lookback={1} | MinROC={2:F1} | ReqAccel={3} | BlockAccelSell={4}",
@@ -2303,6 +2313,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print(string.Format("     KEY LEVELS      : Gate={0} | Prox={1}T | VWAP={2} PDH={3} PDL={4} IBH={5} IBL={6} PMH={7} PML={8} POC={9} | DeltaAgree={10} | RevAbsorb={11} | AvoidMidday={12}",
                 UseKeyLevelGate, KeyLevelProximityTicks, KL_AllowVWAP, KL_AllowPDH, KL_AllowPDL, KL_AllowIBH, KL_AllowIBL, KL_AllowPMH, KL_AllowPML, KL_AllowPOC,
                 KL_RequireDeltaAgreement, KL_RequireAbsorptionForReversal, KL_AvoidMiddayChop));
+            Print(string.Format("     SPREAD TELEMETRY: Enabled (SignalSpread logged per trade; BookDepth pending OnMarketDepth() integration)"));
 
             Print("-------------------------------------------------------------------------");
             Print(string.Format("[04] TIER A PROFILE  : ENABLED = {0} | Target Size: {1} to {2}", S3_Enable, S3_MinStackSize, S3_MaxStackSize));
@@ -2428,6 +2439,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print(string.Format("     [LIQUIDITY-RAW] Range: {0:F1}T | Secs: {1:F2} | R/1k: {2:F1}T | BarDelta: {3:F0} | Delta/Tick: {4:F1} | Delta/Vol: {5:F1}% | Escape: {6:F1}T | DomVol: {7:F1}% | Ratio: {8:F1}",
                 lastEntrySignalBarRangeTicks, lastEntrySignalBarSecs, lastEntryRangePer1kVolumeTicks, lastEntryBarDelta, lastEntryDeltaPerTick, lastEntryDeltaPctOfVolume,
                 lastEntryEscapeTicks, lastEntryDomVolPercent, lastEntryValidBullishRatio));
+            Print(string.Format("     [SPREAD-DEPTH] SignalSpread: {0:F1}T | AvgSpread: {1:F1}T | MaxSpread: {2:F1}T | BidVol: {3:F0} | AskVol: {4:F0}",
+                lastEntrySignalSpread,
+                lastEntryAvgSpread,
+                lastEntryMaxSpread,
+                lastEntryBookBidVol,
+                lastEntryBookAskVol));
 
             if (lastEntryRangeBarMode)
                 Print(string.Format("     [RANGE-BAR] Pace: {0} | ClosePos: {1:P0} | Body: {2:P0} | Overlap: {3:P0} | LowWick: {4:P0} | UpWick: {5:P0}",
@@ -2440,8 +2457,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print(string.Format("     [MATRIX-PROFILE] Family: {0} | Pair: {1} | ConstVolMode: {2} | DisableBarVolFilters: {3} | RuleSet: {4}",
                 lastEntryAdaptiveFamily, lastEntrySpatialPair, lastEntryConstantVolumeMode, lastEntryDisableBarVolumeFilters, lastEntryAdaptiveRuleSummary));
 
-            Print(string.Format("     [MATRIX-STATE] BaseStack: {0} | PreMatrix: {1} | Matrix: {2} | Proofs: {3} | VerdictReason: {4}",
-                lastEntryBaseStackPass, lastEntryPreMatrixPass, lastEntryMatrixVerdict, lastEntryMatrixProofState, lastEntryMatrixBlockReason));
+            Print(string.Format("     [MATRIX-STATE] BaseStack: {0} | PreMatrix: {1} | Matrix: {2} | Proofs: {3} | VerdictReason: {4} | CeilingVABlocked: {5}",
+                lastEntryBaseStackPass, lastEntryPreMatrixPass, lastEntryMatrixVerdict, lastEntryMatrixProofState, lastEntryMatrixBlockReason, lastEntryCeilingAboveVAHBlocked));
 
             if (ShadowMatrixMode)
             {
@@ -3533,6 +3550,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                         case AdaptiveContextFamily.CeilingBreakout:
                         {
+                            // CEILING-BO ABOVE-VAH BLOCK
+                            if (UseCeilingAboveVAHBlock && vaContext == ValueAreaContext.AboveVAH)
+                            {
+                                matrixVerdict = false;
+                                if (string.IsNullOrEmpty(matrixBlockReason))
+                                    matrixBlockReason = "Ceiling: blocked ABOVE-VAH entry (UseCeilingAboveVAHBlock)";
+                            }
+
                             bool isLargeConstVol = constantVolumeBarMode && totalBarVol >= 1400;
                             bool ceilingIntensityPass = (domVolLongPercent >= adaptiveProfile.MinDomVol) || (validBullishRatio >= adaptiveProfile.MinRatio);
                             if (!ceilingIntensityPass)
@@ -4010,6 +4035,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     lastEntryDisableBarVolumeFilters = disableBarVolumeDependentFilters;
                     lastEntrySessionAxis = sessionBucketStr;
                     lastEntrySpatialPair = spatialPairStr;
+                    lastEntryCeilingAboveVAHBlocked = (UseCeilingAboveVAHBlock && adaptiveContextFamily == AdaptiveContextFamily.CeilingBreakout && vaContext == ValueAreaContext.AboveVAH);
 
                     lastEntrySignalPrice = Close[1];
                     lastEntrySessionHigh = sessionHigh;
@@ -4139,6 +4165,16 @@ namespace NinjaTrader.NinjaScript.Strategies
                     if (UseTradeLogging)
                         Print(string.Format("Immediate Entry | EntryBar={0:yyyy-MM-dd HH:mm:ss} | B1={1:HH:mm:ss} O1={2} C1={3}",
                             Time[0], Time[1], Open[1], Close[1]));
+
+                    // Capture spread telemetry at signal time
+                    double currentBid = GetCurrentBid();
+                    double currentAsk = GetCurrentAsk();
+                    double currentSpread = (currentAsk - currentBid) / TickSize;
+                    lastEntrySignalSpread = currentSpread;
+                    lastEntryAvgSpread = currentSpread;  // Placeholder — same as signal spread until bar-level accumulation added
+                    lastEntryMaxSpread = currentSpread;  // Placeholder
+                    lastEntryBookBidVol = 0;  // Placeholder pending OnMarketDepth() integration
+                    lastEntryBookAskVol = 0;  // Placeholder pending OnMarketDepth() integration
 
                     EnterLong("MomLE");
                 }
@@ -4499,6 +4535,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Range(0.0, 200.0)]
         [Display(Name = "04. Max Escape Ticks Global", Order = 4, GroupName = "03l. SIGNAL BAR QUALITY")]
         public double MaxEscapeGlobalTicks { get; set; }
+
+        // ==============================================================================
+        // 03m: CEILING-BO VA FILTER
+        // ==============================================================================
+        [NinjaScriptProperty]
+        [Display(Name = "01. Block CEILING-BO Above VAH", Order = 1, GroupName = "03m. CEILING-BO VA FILTER")]
+        public bool UseCeilingAboveVAHBlock { get; set; }
 
         // ==============================================================================
         // 03j: ADAPTIVE CONTEXT MATRIX
