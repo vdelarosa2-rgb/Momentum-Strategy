@@ -3406,15 +3406,18 @@ namespace NinjaTrader.NinjaScript.Strategies
                     s3_long_valid = false;
 
                 // SIGNAL BAR QUALITY - Min Duration
-                if (UseMinSignalBarSecs && signalBarSecs < MinSignalBarSecs)
+                bool passMinBarSecs = !UseMinSignalBarSecs || signalBarSecs >= MinSignalBarSecs;
+                if (!passMinBarSecs)
                     s3_long_valid = false;
 
                 // SIGNAL BAR QUALITY - Global Min Escape Floor
-                if (UseMinEscapeTicksGlobal && escapeLongTicks < MinEscapeTicksGlobal)
+                bool passMinEscapeGlobal = !UseMinEscapeTicksGlobal || escapeLongTicks >= MinEscapeTicksGlobal;
+                if (!passMinEscapeGlobal)
                     s3_long_valid = false;
 
                 // SIGNAL BAR QUALITY - Global Max Escape Ceiling
-                if (UseMaxEscapeTicksGlobal && escapeLongTicks > MaxEscapeTicksGlobal)
+                bool passMaxEscapeGlobal = !UseMaxEscapeTicksGlobal || escapeLongTicks <= MaxEscapeTicksGlobal;
+                if (!passMaxEscapeGlobal)
                     s3_long_valid = false;
 
                 // 1. Capture the exact state of the global filters BEFORE the matrix touches it
@@ -3979,9 +3982,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                     lastEntryVolRegimeGateAllowed = volRegimeGateAllowed;
                     lastEntrySessionContextAllowed = sessionContextAllowed;
-                    lastEntryPassMinBarSecs = !UseMinSignalBarSecs || signalBarSecs >= MinSignalBarSecs;
-                    lastEntryPassMinEscapeGlobal = !UseMinEscapeTicksGlobal || escapeLongTicks >= MinEscapeTicksGlobal;
-                    lastEntryPassMaxEscapeGlobal = !UseMaxEscapeTicksGlobal || escapeLongTicks <= MaxEscapeTicksGlobal;
+                    lastEntryPassMinBarSecs = passMinBarSecs;
+                    lastEntryPassMinEscapeGlobal = passMinEscapeGlobal;
+                    lastEntryPassMaxEscapeGlobal = passMaxEscapeGlobal;
                     lastEntryCeilingAboveVAHBlocked = (UseCeilingAboveVAHBlock && adaptiveContextFamily == AdaptiveContextFamily.CeilingBreakout && vaContext == ValueAreaContext.AboveVAH);
 
                     lastEntryBarIsClimax = isClimax;
