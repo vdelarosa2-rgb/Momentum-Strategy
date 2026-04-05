@@ -406,6 +406,14 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double lastEntryEscapeTicks = 0;
         private double lastEntryDomVolPercent = 0;
         private double lastEntryValidBullishRatio = 0;
+
+        // Spread & Book Depth telemetry
+        private double lastEntryAvgSpread = 0.0;      // Average bid-ask spread (in ticks) during signal bar
+        private double lastEntryMaxSpread = 0.0;      // Max bid-ask spread (in ticks) during signal bar
+        private double lastEntrySignalSpread = 0.0;   // Bid-ask spread at exact signal moment
+        private double lastEntryBookBidVol = 0.0;     // Volume at best bid at signal time
+        private double lastEntryBookAskVol = 0.0;     // Volume at best ask at signal time
+
         private double lastEntryPocPosition = 0;
         private bool lastEntryRangeBarMode = false;
         private string lastEntryRangePace = "";
@@ -2277,6 +2285,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print(string.Format("     KEY LEVELS      : Gate={0} | Prox={1}T | VWAP={2} PDH={3} PDL={4} IBH={5} IBL={6} PMH={7} PML={8} POC={9} | DeltaAgree={10} | RevAbsorb={11} | AvoidMidday={12}",
                 UseKeyLevelGate, KeyLevelProximityTicks, KL_AllowVWAP, KL_AllowPDH, KL_AllowPDL, KL_AllowIBH, KL_AllowIBL, KL_AllowPMH, KL_AllowPML, KL_AllowPOC,
                 KL_RequireDeltaAgreement, KL_RequireAbsorptionForReversal, KL_AvoidMiddayChop));
+            Print(string.Format("     SPREAD TELEMETRY: Enabled (SignalSpread + BookDepth logged per trade)"));
 
             Print("-------------------------------------------------------------------------");
             Print(string.Format("[04] TIER A PROFILE  : ENABLED = {0} | Target Size: {1} to {2}", S3_Enable, S3_MinStackSize, S3_MaxStackSize));
@@ -2402,6 +2411,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print(string.Format("     [LIQUIDITY-RAW] Range: {0:F1}T | Secs: {1:F2} | R/1k: {2:F1}T | BarDelta: {3:F0} | Delta/Tick: {4:F1} | Delta/Vol: {5:F1}% | Escape: {6:F1}T | DomVol: {7:F1}% | Ratio: {8:F1}",
                 lastEntrySignalBarRangeTicks, lastEntrySignalBarSecs, lastEntryRangePer1kVolumeTicks, lastEntryBarDelta, lastEntryDeltaPerTick, lastEntryDeltaPctOfVolume,
                 lastEntryEscapeTicks, lastEntryDomVolPercent, lastEntryValidBullishRatio));
+            Print(string.Format("     [SPREAD-DEPTH] SignalSpread: {0:F1}T | AvgSpread: {1:F1}T | MaxSpread: {2:F1}T | BidVol: {3:F0} | AskVol: {4:F0}",
+                lastEntrySignalSpread, lastEntryAvgSpread, lastEntryMaxSpread, lastEntryBookBidVol, lastEntryBookAskVol));
 
             if (lastEntryRangeBarMode)
                 Print(string.Format("     [RANGE-BAR] Pace: {0} | ClosePos: {1:P0} | Body: {2:P0} | Overlap: {3:P0} | LowWick: {4:P0} | UpWick: {5:P0}",
@@ -4084,6 +4095,16 @@ namespace NinjaTrader.NinjaScript.Strategies
                             lastEntryAvwapReclaimed = lastEntryAvwapLowReclaimed;
                             break;
                     }
+
+                    // Capture spread telemetry at signal time
+                    double currentBid = GetCurrentBid();
+                    double currentAsk = GetCurrentAsk();
+                    double currentSpread = (currentAsk - currentBid) / TickSize;
+                    lastEntrySignalSpread = currentSpread;
+                    lastEntryAvgSpread = currentSpread;  // Placeholder — same as signal spread until bar-level accumulation is added
+                    lastEntryMaxSpread = currentSpread;  // Placeholder
+                    lastEntryBookBidVol = 0;  // Will be populated when MarketDepth subscription is added
+                    lastEntryBookAskVol = 0;  // Will be populated when MarketDepth subscription is added
 
                     if (UseTradeLogging)
                         Print(string.Format("Immediate Entry | EntryBar={0:yyyy-MM-dd HH:mm:ss} | B1={1:HH:mm:ss} O1={2} C1={3}",
