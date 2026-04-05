@@ -207,6 +207,20 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double adaptiveDeltaBaseline = 0;
         private double adaptiveDeltaStdDev = 0;
 
+        // IMB-ADAPTIVE rolling baselines (circular buffers, same lookback as volume)
+        private double[] imbImbVolBuffer;
+        private double[] imbDomVolBuffer;
+        private double[] imbStackBuffer;
+        private double[] imbRatioBuffer;
+        private double[] imbEscapeBuffer;
+        private int imbBufferIndex = 0;
+        private bool imbAdaptiveReady = false;
+        private double imbImbVolBaseline = 0, imbImbVolStdDev = 0;
+        private double imbDomVolBaseline  = 0, imbDomVolStdDev  = 0;
+        private double imbStackBaseline   = 0, imbStackStdDev   = 0;
+        private double imbRatioBaseline   = 0, imbRatioStdDev   = 0;
+        private double imbEscapeBaseline  = 0, imbEscapeStdDev  = 0;
+
         private double sessionHigh = double.MinValue;
         private double sessionLow = double.MaxValue;
         private bool sessionInitialized = false;
@@ -503,6 +517,29 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool lastEntryVolRegimeGateAllowed = true;
         #endregion
 
+        #region Session Context Gate Telemetry
+        private bool lastEntrySessionContextGateAllowed = true;
+        #endregion
+
+        #region Signal Quality Telemetry
+        private bool lastEntryMinSecsPass = true;
+        private bool lastEntryMaxEscapeGlobalPass = true;
+        #endregion
+
+        #region IMB-ADAPTIVE Telemetry
+        private double lastEntryImbVolZ  = 0;
+        private double lastEntryDomVolZ  = 0;
+        private double lastEntryStackZ   = 0;
+        private double lastEntryRatioZ   = 0;
+        private double lastEntryEscapeZ  = 0;
+        private double lastEntryImbComposite = 0;
+        private double lastEntryImbVolRaw  = 0;
+        private double lastEntryDomVolRaw  = 0;
+        private double lastEntryStackRaw   = 0;
+        private double lastEntryRatioRaw   = 0;
+        private double lastEntryEscapeRaw  = 0;
+        #endregion
+
         #region OnStateChange
         protected override void OnStateChange()
         {
@@ -612,6 +649,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Session_AllowMidRange = true;
                 Session_AllowUpperCont = true;
                 Session_AllowHighBo = true;
+
+                // SIGNAL QUALITY GLOBAL FILTERS
+                UseMinBarSecs = false;
+                MinBarSecsThreshold = 3.0;
+                UseMaxEscapeGlobal = false;
+                MaxEscapeGlobalTicks = 30.0;
 
                 // ADAPTIVE CONTEXT MATRIX
                 UseAdaptiveContextMatrix = false;
@@ -766,6 +809,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 volumeBuffer = new double[adaptiveLookback];
                 deltaBuffer = new double[adaptiveLookback];
                 barRangeBuffer = new double[adaptiveLookback];
+                imbImbVolBuffer = new double[adaptiveLookback];
+                imbDomVolBuffer = new double[adaptiveLookback];
+                imbStackBuffer  = new double[adaptiveLookback];
+                imbRatioBuffer  = new double[adaptiveLookback];
+                imbEscapeBuffer = new double[adaptiveLookback];
                 recentTradeResults = new Queue<TradeResult>();
                 volumeByHour = new Dictionary<int, List<double>>();
                 recentBullStacks = new List<StackInfo>();
@@ -1278,6 +1326,75 @@ namespace NinjaTrader.NinjaScript.Strategies
                 case SessionContext.SessionHighBo: return "SESS-HIGH-BO";
                 default: return "UNKNOWN";
             }
+        }
+
+        private bool IsSessionContextAllowed(SessionContext context)
+        {
+            if (!UseSessionContextFilter) return true;
+            switch (context)
+            {
+                case SessionContext.SessionLowRev:  return Session_AllowLowRev;
+                case SessionContext.LowerCont:      return Session_AllowLowerCont;
+                case SessionContext.MidRange:       return Session_AllowMidRange;
+                case SessionContext.UpperCont:      return Session_AllowUpperCont;
+                case SessionContext.SessionHighBo:  return Session_AllowHighBo;
+                default: return true;
+            }
+        }
+
+        /// <summary>
+        /// Feed one completed signal bar's IMB metrics into the rolling baselines.
+        /// Must be called AFTER entry telemetry is captured so the signal bar data is [1].
+        /// </summary>
+        private void UpdateImbAdaptiveBaselines(double imbVol, double domVol, double stack, double ratio, double escape)
+        {
+            imbImbVolBuffer[imbBufferIndex] = imbVol;
+            imbDomVolBuffer[imbBufferIndex] = domVol;
+            imbStackBuffer[imbBufferIndex]  = stack;
+            imbRatioBuffer[imbBufferIndex]  = ratio;
+            imbEscapeBuffer[imbBufferIndex] = escape;
+            imbBufferIndex = (imbBufferIndex + 1) % adaptiveLookback;
+
+            // Require a full buffer before enabling — mirrors the existing adaptive volume
+            // baseline guard ("if (CurrentBar >= adaptiveLookback)").
+            if (CurrentBar < adaptiveLookback) return;
+
+            // Mark ready and recalculate mean + std dev for every metric over the window.
+            imbAdaptiveReady = true;
+
+            double sumIV=0, sumDV=0, sumSt=0, sumRa=0, sumEs=0;
+            for (int i = 0; i < adaptiveLookback; i++)
+            {
+                sumIV += imbImbVolBuffer[i];
+                sumDV += imbDomVolBuffer[i];
+                sumSt += imbStackBuffer[i];
+                sumRa += imbRatioBuffer[i];
+                sumEs += imbEscapeBuffer[i];
+            }
+            imbImbVolBaseline = sumIV / adaptiveLookback;
+            imbDomVolBaseline  = sumDV / adaptiveLookback;
+            imbStackBaseline   = sumSt / adaptiveLookback;
+            imbRatioBaseline   = sumRa / adaptiveLookback;
+            imbEscapeBaseline  = sumEs / adaptiveLookback;
+
+            double ssIV=0, ssDV=0, ssSt=0, ssRa=0, ssEs=0;
+            for (int i = 0; i < adaptiveLookback; i++)
+            {
+                double dIV = imbImbVolBuffer[i] - imbImbVolBaseline;
+                double dDV = imbDomVolBuffer[i] - imbDomVolBaseline;
+                double dSt = imbStackBuffer[i]  - imbStackBaseline;
+                double dRa = imbRatioBuffer[i]  - imbRatioBaseline;
+                double dEs = imbEscapeBuffer[i] - imbEscapeBaseline;
+                ssIV += dIV*dIV; ssDV += dDV*dDV; ssSt += dSt*dSt;
+                ssRa += dRa*dRa; ssEs += dEs*dEs;
+            }
+            // GetZScore already returns 0 when stdDev <= 0, so zero-variance metrics
+            // produce a safe z-score of 0 rather than NaN/Inf.
+            imbImbVolStdDev = Math.Sqrt(ssIV / adaptiveLookback);
+            imbDomVolStdDev  = Math.Sqrt(ssDV / adaptiveLookback);
+            imbStackStdDev   = Math.Sqrt(ssSt / adaptiveLookback);
+            imbRatioStdDev   = Math.Sqrt(ssRa / adaptiveLookback);
+            imbEscapeStdDev  = Math.Sqrt(ssEs / adaptiveLookback);
         }
 
         private int GetActiveAnchorIndex()
@@ -2260,6 +2377,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 UseValueAreaFilter, VA_AllowNoVA, VA_AllowBelowVAL, VA_AllowAtVAL, VA_AllowInValue, VA_AllowAtPOC, VA_AllowAtVAH, VA_AllowAboveVAH, VA_RequirePOCTouch, VA_POCTouchLookbackBars));
             Print(string.Format("     SESSION CONTEXT : Use={0} | LowRev={1} | LowCont={2} | Mid={3} | UpCont={4} | HighBo={5}",
                 UseSessionContextFilter, Session_AllowLowRev, Session_AllowLowerCont, Session_AllowMidRange, Session_AllowUpperCont, Session_AllowHighBo));
+            Print(string.Format("     SIGNAL QUALITY  : MinBarSecs={0} (Min={1:F1}s) | MaxEscapeGlobal={2} (Max={3:F1}T)",
+                UseMinBarSecs, MinBarSecsThreshold, UseMaxEscapeGlobal, MaxEscapeGlobalTicks));
             Print(string.Format("     ADAPT MATRIX    : Use={0} | ConstVolAutoOff={1} | ShadowMode={2} | CeilingTrapAbs%={3:F1} | Pair/Family thresholds are internally calibrated by context and bar type",
                 UseAdaptiveContextMatrix, AutoDisableBarVolumeFiltersOnConstantVolume, ShadowMatrixMode, AdaptiveCeilingTrapAbsorptionPct));
             Print(string.Format("     RANGE BAR ADAPT : Use={0} | Fast<={1:F0}s | Slow>={2:F0}s | ContClose>={3:P0} | SlowClose>={4:P0} | MaxOverlap<={5:P0} | RejWick>={6:P0}",
@@ -2433,6 +2552,26 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             Print(string.Format("     [VOL-REGIME] Regime: {0} | ZScore: {1:F2} | GateEnabled: {2} | GateAllowed: {3}",
                 lastEntryVolRegime, lastEntryVolZScore, UseVolatilityRegimeGate, lastEntryVolRegimeGateAllowed));
+
+            Print(string.Format("     [SESSION-CONTEXT] Context: {0} | SessPos: {1:F2} | GateEnabled: {2} | GateAllowed: {3}",
+                lastEntryContext, lastEntrySessionPos, UseSessionContextFilter, lastEntrySessionContextGateAllowed));
+
+            Print(string.Format("     [SIGNAL-QUALITY] BarSecs: {0:F2} | MinSecsFilter: {1} (Min={2:F1}s | Pass={3}) | MaxEscapeFilter: {4} (Max={5:F1}T | Escape={6:F1}T | Pass={7})",
+                lastEntrySignalBarSecs,
+                UseMinBarSecs, MinBarSecsThreshold, lastEntryMinSecsPass,
+                UseMaxEscapeGlobal, MaxEscapeGlobalTicks, lastEntryEscapeRaw, lastEntryMaxEscapeGlobalPass));
+
+            if (imbAdaptiveReady)
+            {
+                Print(string.Format("     [IMB-ADAPTIVE] ImbVolZ: {0:F2} | DomVolZ: {1:F2} | StackZ: {2:F2} | RatioZ: {3:F2} | EscapeZ: {4:F2} | Composite: {5:F2}",
+                    lastEntryImbVolZ, lastEntryDomVolZ, lastEntryStackZ, lastEntryRatioZ, lastEntryEscapeZ, lastEntryImbComposite));
+                Print(string.Format("     [IMB-BASELINES] ImbVol: {0:F1}±{1:F1} | DomVol: {2:F1}±{3:F1}% | Stack: {4:F1}±{5:F1} | Ratio: {6:F1}±{7:F1} | Escape: {8:F1}±{9:F1}T",
+                    imbImbVolBaseline, imbImbVolStdDev,
+                    imbDomVolBaseline,  imbDomVolStdDev,
+                    imbStackBaseline,   imbStackStdDev,
+                    imbRatioBaseline,   imbRatioStdDev,
+                    imbEscapeBaseline,  imbEscapeStdDev));
+            }
 
             Print(string.Format("     [CLIMAX-EXHAUST] IsClimax: {0} | PrevClimax: {1} | IsExhaust: {2} | ClimaxScore: {3:F2} | ExhaustScore: {4:F2} | PrevVol: {5:F0} | CurVol: {6:F0} | PassClimax: {7} | PassExhaust: {8}",
                 lastEntryBarIsClimax, lastEntryPrevBarWasClimax, lastEntryBarIsExhaustion, lastEntryClimaxScore, lastEntryExhaustionScore,
@@ -3355,6 +3494,27 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (UseKeyLevelGate && !keyLevelGatePass)
                     s3_long_valid = false;
 
+                // ── GLOBAL GATES (applied after per-filter checks, before matrix) ──────────
+                // Vol Regime Gate: block entry when the current regime is not allowed.
+                // BUG FIX: volRegimeGateAllowed was computed but never enforced before v2.50 patch.
+                if (!volRegimeGateAllowed)
+                    s3_long_valid = false;
+
+                // Session Context Gate: block entry for disallowed session position zones.
+                if (!IsSessionContextAllowed(stackContextEnum))
+                    s3_long_valid = false;
+
+                // Signal Quality – Minimum bar duration: too-fast bars lack reliable footprint.
+                bool passMinBarSecs = !UseMinBarSecs || signalBarSecs >= MinBarSecsThreshold;
+                if (!passMinBarSecs)
+                    s3_long_valid = false;
+
+                // Signal Quality – Maximum escape (global cap overrides per-family matrix limits).
+                bool passMaxEscapeGlobal = !UseMaxEscapeGlobal || escapeLongTicks <= MaxEscapeGlobalTicks;
+                if (!passMaxEscapeGlobal)
+                    s3_long_valid = false;
+                // ─────────────────────────────────────────────────────────────────────────────
+
                 // 1. Capture the exact state of the global filters BEFORE the matrix touches it
                 bool preMatrixPass = s3_long_valid;
                 bool matrixVerdict = true; // Innocent until proven guilty by the Matrix
@@ -3908,6 +4068,41 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                     lastEntryVolRegimeGateAllowed = volRegimeGateAllowed;
 
+                    // Session context & signal quality gate telemetry
+                    lastEntrySessionContextGateAllowed = IsSessionContextAllowed(stackContextEnum);
+                    lastEntryMinSecsPass = !UseMinBarSecs || signalBarSecs >= MinBarSecsThreshold;
+                    lastEntryMaxEscapeGlobalPass = !UseMaxEscapeGlobal || escapeLongTicks <= MaxEscapeGlobalTicks;
+
+                    // IMB-ADAPTIVE: compute z-scores for the five footprint metrics and
+                    // feed this bar's raw values into the rolling baselines.
+                    // NOTE: z-scores are computed BEFORE calling UpdateImbAdaptiveBaselines so
+                    // the current bar is measured against prior bars only, preventing self-influence.
+                    lastEntryImbVolRaw  = validAvgBullishImbVol;
+                    lastEntryDomVolRaw  = domVolLongPercent;
+                    lastEntryStackRaw   = maxBullishStack;
+                    lastEntryRatioRaw   = validBullishRatio;
+                    lastEntryEscapeRaw  = escapeLongTicks;
+
+                    if (imbAdaptiveReady)
+                    {
+                        lastEntryImbVolZ  = GetZScore(validAvgBullishImbVol, imbImbVolBaseline, imbImbVolStdDev);
+                        lastEntryDomVolZ  = GetZScore(domVolLongPercent,     imbDomVolBaseline,  imbDomVolStdDev);
+                        lastEntryStackZ   = GetZScore(maxBullishStack,       imbStackBaseline,   imbStackStdDev);
+                        lastEntryRatioZ   = GetZScore(validBullishRatio,     imbRatioBaseline,   imbRatioStdDev);
+                        lastEntryEscapeZ  = GetZScore(escapeLongTicks,       imbEscapeBaseline,  imbEscapeStdDev);
+                        lastEntryImbComposite = (lastEntryImbVolZ + lastEntryDomVolZ + lastEntryStackZ + lastEntryRatioZ + lastEntryEscapeZ) / 5.0;
+                    }
+                    else
+                    {
+                        lastEntryImbVolZ = lastEntryDomVolZ = lastEntryStackZ =
+                        lastEntryRatioZ  = lastEntryEscapeZ = lastEntryImbComposite = 0;
+                    }
+
+                    // Update baselines AFTER capturing the snapshot so the current bar
+                    // influences future bars (not itself).
+                    UpdateImbAdaptiveBaselines(validAvgBullishImbVol, domVolLongPercent,
+                        maxBullishStack, validBullishRatio, escapeLongTicks);
+
                     lastEntryBarIsClimax = isClimax;
                     lastEntryBarIsExhaustion = isExhaustion;
                     lastEntryPrevBarWasClimax = prevBarClimaxState;
@@ -4427,6 +4622,27 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "06. Allow SESS-HIGH-BO (0.8-1.0)", Order = 6, GroupName = "03i. SESSION CONTEXT FILTER")]
         public bool Session_AllowHighBo { get; set; }
+
+        // ==============================================================================
+        // 03i-b: SIGNAL QUALITY GLOBAL FILTERS
+        // ==============================================================================
+        [NinjaScriptProperty]
+        [Display(Name = "01. Use Min Bar Duration Filter", Order = 1, GroupName = "03i-b. SIGNAL QUALITY")]
+        public bool UseMinBarSecs { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.5, 120.0)]
+        [Display(Name = "02. Min Bar Duration (Secs)", Order = 2, GroupName = "03i-b. SIGNAL QUALITY")]
+        public double MinBarSecsThreshold { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "03. Use Max Escape Global Filter", Order = 3, GroupName = "03i-b. SIGNAL QUALITY")]
+        public bool UseMaxEscapeGlobal { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, 200.0)]
+        [Display(Name = "04. Max Escape Ticks (Global)", Order = 4, GroupName = "03i-b. SIGNAL QUALITY")]
+        public double MaxEscapeGlobalTicks { get; set; }
 
         // ==============================================================================
         // 03j: ADAPTIVE CONTEXT MATRIX
