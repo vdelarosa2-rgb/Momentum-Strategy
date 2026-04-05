@@ -4015,7 +4015,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             bool cooldownOkEval = CooldownWindowComplete(Time[0]);
-            bool validLongSignal = s3_long_valid && cooldownOkEval;
+            bool validLongSignal = s3_long_valid && cooldownOkEval && volRegimeGateAllowed;
             #endregion
 
             #region Entry Execution
