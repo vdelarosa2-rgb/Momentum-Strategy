@@ -503,6 +503,12 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool lastEntryVolRegimeGateAllowed = true;
         #endregion
 
+        #region Session Context / Signal Quality Telemetry
+        private bool lastEntrySessionContextAllowed = true;
+        private bool lastEntryPassMinBarSecs = true;
+        private bool lastEntryPassMaxEscapeGlobal = true;
+        #endregion
+
         #region OnStateChange
         protected override void OnStateChange()
         {
@@ -612,6 +618,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Session_AllowMidRange = true;
                 Session_AllowUpperCont = true;
                 Session_AllowHighBo = true;
+
+                // SIGNAL BAR QUALITY
+                UseMinSignalBarSecs = false;
+                MinSignalBarSecs = 3.0;
+                UseMaxEscapeTicksGlobal = false;
+                MaxEscapeTicksGlobal = 30.0;
 
                 // ADAPTIVE CONTEXT MATRIX
                 UseAdaptiveContextMatrix = false;
@@ -1243,6 +1255,21 @@ namespace NinjaTrader.NinjaScript.Strategies
                 case VolatilityRegime.Active: return AllowActiveRegime;
                 case VolatilityRegime.Extreme: return AllowExtremeRegime;
                 case VolatilityRegime.Init: return false; 
+                default: return true;
+            }
+        }
+
+        private bool IsSessionContextAllowed(SessionContext context)
+        {
+            if (!UseSessionContextFilter) return true;
+
+            switch (context)
+            {
+                case SessionContext.SessionLowRev: return Session_AllowLowRev;
+                case SessionContext.LowerCont: return Session_AllowLowerCont;
+                case SessionContext.MidRange: return Session_AllowMidRange;
+                case SessionContext.UpperCont: return Session_AllowUpperCont;
+                case SessionContext.SessionHighBo: return Session_AllowHighBo;
                 default: return true;
             }
         }
@@ -2260,6 +2287,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 UseValueAreaFilter, VA_AllowNoVA, VA_AllowBelowVAL, VA_AllowAtVAL, VA_AllowInValue, VA_AllowAtPOC, VA_AllowAtVAH, VA_AllowAboveVAH, VA_RequirePOCTouch, VA_POCTouchLookbackBars));
             Print(string.Format("     SESSION CONTEXT : Use={0} | LowRev={1} | LowCont={2} | Mid={3} | UpCont={4} | HighBo={5}",
                 UseSessionContextFilter, Session_AllowLowRev, Session_AllowLowerCont, Session_AllowMidRange, Session_AllowUpperCont, Session_AllowHighBo));
+            Print(string.Format("     SIGNAL QUALITY  : MinBarSecs={0} ({1:F1}s) | MaxEscapeGlobal={2} ({3:F1}T)",
+                UseMinSignalBarSecs, MinSignalBarSecs, UseMaxEscapeTicksGlobal, MaxEscapeTicksGlobal));
             Print(string.Format("     ADAPT MATRIX    : Use={0} | ConstVolAutoOff={1} | ShadowMode={2} | CeilingTrapAbs%={3:F1} | Pair/Family thresholds are internally calibrated by context and bar type",
                 UseAdaptiveContextMatrix, AutoDisableBarVolumeFiltersOnConstantVolume, ShadowMatrixMode, AdaptiveCeilingTrapAbsorptionPct));
             Print(string.Format("     RANGE BAR ADAPT : Use={0} | Fast<={1:F0}s | Slow>={2:F0}s | ContClose>={3:P0} | SlowClose>={4:P0} | MaxOverlap<={5:P0} | RejWick>={6:P0}",
@@ -2433,6 +2462,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             Print(string.Format("     [VOL-REGIME] Regime: {0} | ZScore: {1:F2} | GateEnabled: {2} | GateAllowed: {3}",
                 lastEntryVolRegime, lastEntryVolZScore, UseVolatilityRegimeGate, lastEntryVolRegimeGateAllowed));
+
+            Print(string.Format("     [SESSION-CONTEXT] Context: {0} | SessPos: {1:F2} | GateEnabled: {2} | GateAllowed: {3}",
+                lastEntryContext, lastEntrySessionPos, UseSessionContextFilter, lastEntrySessionContextAllowed));
+
+            Print(string.Format("     [SIGNAL-QUALITY] BarSecs: {0:F2} | MinSecsFilter: {1} (Min={2:F1}s | Pass={3}) | MaxEscapeFilter: {4} (Max={5:F1}T | Escape={6:F1}T | Pass={7})",
+                lastEntrySignalBarSecs, UseMinSignalBarSecs, MinSignalBarSecs, lastEntryPassMinBarSecs,
+                UseMaxEscapeTicksGlobal, MaxEscapeTicksGlobal, lastEntryEscapeTicks, lastEntryPassMaxEscapeGlobal));
 
             Print(string.Format("     [CLIMAX-EXHAUST] IsClimax: {0} | PrevClimax: {1} | IsExhaust: {2} | ClimaxScore: {3:F2} | ExhaustScore: {4:F2} | PrevVol: {5:F0} | CurVol: {6:F0} | PassClimax: {7} | PassExhaust: {8}",
                 lastEntryBarIsClimax, lastEntryPrevBarWasClimax, lastEntryBarIsExhaustion, lastEntryClimaxScore, lastEntryExhaustionScore,
@@ -3058,6 +3094,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             double sessionPosLong = GetSessionPosition(stackMidPriceLongCalc);
             SessionContext stackContextEnum = GetStackContext(sessionPosLong);
             string stackContextLong = GetSessionContextString(stackContextEnum);
+            bool sessionContextAllowed = IsSessionContextAllowed(stackContextEnum);
             SessionLocationBucket sessionBucket = GetSessionLocationBucket(sessionPosLong);
             string sessionBucketStr = GetSessionLocationBucketString(sessionBucket);
             string spatialPairStr = GetSpatialPairLabel(sessionBucket, vaContext);
@@ -3353,6 +3390,18 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
 
                 if (UseKeyLevelGate && !keyLevelGatePass)
+                    s3_long_valid = false;
+
+                // SESSION CONTEXT FILTER
+                if (UseSessionContextFilter && !sessionContextAllowed)
+                    s3_long_valid = false;
+
+                // SIGNAL BAR QUALITY - Min Duration
+                if (UseMinSignalBarSecs && signalBarSecs < MinSignalBarSecs)
+                    s3_long_valid = false;
+
+                // SIGNAL BAR QUALITY - Global Max Escape Ceiling
+                if (UseMaxEscapeTicksGlobal && escapeLongTicks > MaxEscapeTicksGlobal)
                     s3_long_valid = false;
 
                 // 1. Capture the exact state of the global filters BEFORE the matrix touches it
@@ -3907,6 +3956,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                     lastEntryPrevPoc2 = prevPoc2;
 
                     lastEntryVolRegimeGateAllowed = volRegimeGateAllowed;
+                    lastEntrySessionContextAllowed = sessionContextAllowed;
+                    lastEntryPassMinBarSecs = !UseMinSignalBarSecs || signalBarSecs >= MinSignalBarSecs;
+                    lastEntryPassMaxEscapeGlobal = !UseMaxEscapeTicksGlobal || escapeLongTicks <= MaxEscapeTicksGlobal;
 
                     lastEntryBarIsClimax = isClimax;
                     lastEntryBarIsExhaustion = isExhaustion;
@@ -4479,6 +4531,27 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Range(0.0, 1.0)]
         [Display(Name = "07. Min Rejection Wick %", Order = 7, GroupName = "03k. RANGE BAR ADAPTATION")]
         public double RangeMinRejectionWickPct { get; set; }
+
+        // ==============================================================================
+        // 03l: SIGNAL BAR QUALITY
+        // ==============================================================================
+        [NinjaScriptProperty]
+        [Display(Name = "01. Use Min Signal Bar Duration", Order = 1, GroupName = "03l. SIGNAL BAR QUALITY")]
+        public bool UseMinSignalBarSecs { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, 300.0)]
+        [Display(Name = "02. Min Signal Bar Duration (Secs)", Order = 2, GroupName = "03l. SIGNAL BAR QUALITY")]
+        public double MinSignalBarSecs { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "03. Use Max Escape Ticks (Global)", Order = 3, GroupName = "03l. SIGNAL BAR QUALITY")]
+        public bool UseMaxEscapeTicksGlobal { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1.0, 200.0)]
+        [Display(Name = "04. Max Escape Ticks (Global)", Order = 4, GroupName = "03l. SIGNAL BAR QUALITY")]
+        public double MaxEscapeTicksGlobal { get; set; }
 
         [Browsable(false)]
         [XmlIgnore]
