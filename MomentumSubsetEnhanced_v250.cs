@@ -503,6 +503,12 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool lastEntryVolRegimeGateAllowed = true;
         #endregion
 
+        #region Session Context and Signal Quality Gate Telemetry
+        private bool lastEntrySessionContextGateAllowed = true;
+        private bool lastEntryMinSecsPass = true;
+        private bool lastEntryMaxEscapeGlobalPass = true;
+        #endregion
+
         #region OnStateChange
         protected override void OnStateChange()
         {
@@ -612,6 +618,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Session_AllowMidRange = true;
                 Session_AllowUpperCont = true;
                 Session_AllowHighBo = true;
+
+                // SIGNAL QUALITY GLOBAL FILTERS
+                UseMinBarSecs = false;
+                MinBarSecsThreshold = 3.0;
+                UseMaxEscapeGlobal = false;
+                MaxEscapeGlobalTicks = 30.0;
 
                 // ADAPTIVE CONTEXT MATRIX
                 UseAdaptiveContextMatrix = false;
@@ -1243,6 +1255,20 @@ namespace NinjaTrader.NinjaScript.Strategies
                 case VolatilityRegime.Active: return AllowActiveRegime;
                 case VolatilityRegime.Extreme: return AllowExtremeRegime;
                 case VolatilityRegime.Init: return false; 
+                default: return true;
+            }
+        }
+
+        private bool IsSessionContextAllowed(SessionContext context)
+        {
+            if (!UseSessionContextFilter) return true;
+            switch (context)
+            {
+                case SessionContext.SessionLowRev:  return Session_AllowLowRev;
+                case SessionContext.LowerCont:      return Session_AllowLowerCont;
+                case SessionContext.MidRange:       return Session_AllowMidRange;
+                case SessionContext.UpperCont:      return Session_AllowUpperCont;
+                case SessionContext.SessionHighBo:  return Session_AllowHighBo;
                 default: return true;
             }
         }
@@ -3355,6 +3381,26 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (UseKeyLevelGate && !keyLevelGatePass)
                     s3_long_valid = false;
 
+                // ── GLOBAL GATES (applied after per-filter checks, before matrix) ──────────
+                // VOLATILITY REGIME GATE
+                if (UseVolatilityRegimeGate && !volRegimeGateAllowed)
+                    s3_long_valid = false;
+
+                // SESSION CONTEXT FILTER
+                if (UseSessionContextFilter && !IsSessionContextAllowed(stackContextEnum))
+                    s3_long_valid = false;
+
+                // SIGNAL QUALITY: Min Bar Duration
+                bool passMinBarSecs = !UseMinBarSecs || signalBarSecs >= MinBarSecsThreshold;
+                if (!passMinBarSecs)
+                    s3_long_valid = false;
+
+                // SIGNAL QUALITY: Max Escape Global
+                bool passMaxEscapeGlobal = !UseMaxEscapeGlobal || escapeLongTicks <= MaxEscapeGlobalTicks;
+                if (!passMaxEscapeGlobal)
+                    s3_long_valid = false;
+                // ─────────────────────────────────────────────────────────────────────────────
+
                 // 1. Capture the exact state of the global filters BEFORE the matrix touches it
                 bool preMatrixPass = s3_long_valid;
                 bool matrixVerdict = true; // Innocent until proven guilty by the Matrix
@@ -3908,6 +3954,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                     lastEntryVolRegimeGateAllowed = volRegimeGateAllowed;
 
+                    // Session context & signal quality gate telemetry
+                    lastEntrySessionContextGateAllowed = IsSessionContextAllowed(stackContextEnum);
+                    lastEntryMinSecsPass = passMinBarSecs;
+                    lastEntryMaxEscapeGlobalPass = passMaxEscapeGlobal;
+
                     lastEntryBarIsClimax = isClimax;
                     lastEntryBarIsExhaustion = isExhaustion;
                     lastEntryPrevBarWasClimax = prevBarClimaxState;
@@ -4427,6 +4478,27 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "06. Allow SESS-HIGH-BO (0.8-1.0)", Order = 6, GroupName = "03i. SESSION CONTEXT FILTER")]
         public bool Session_AllowHighBo { get; set; }
+
+        // ==============================================================================
+        // 03i-b: SIGNAL QUALITY GLOBAL FILTERS
+        // ==============================================================================
+        [NinjaScriptProperty]
+        [Display(Name = "01. Use Min Signal Bar Duration", Order = 1, GroupName = "03l. SIGNAL BAR QUALITY")]
+        public bool UseMinBarSecs { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, 300.0)]
+        [Display(Name = "02. Min Signal Bar Duration (Secs)", Order = 2, GroupName = "03l. SIGNAL BAR QUALITY")]
+        public double MinBarSecsThreshold { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "03. Use Max Escape Ticks Global", Order = 3, GroupName = "03l. SIGNAL BAR QUALITY")]
+        public bool UseMaxEscapeGlobal { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, 200.0)]
+        [Display(Name = "04. Max Escape Ticks Global", Order = 4, GroupName = "03l. SIGNAL BAR QUALITY")]
+        public double MaxEscapeGlobalTicks { get; set; }
 
         // ==============================================================================
         // 03j: ADAPTIVE CONTEXT MATRIX
