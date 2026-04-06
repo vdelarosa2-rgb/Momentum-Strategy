@@ -392,6 +392,12 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double lastEntryBookBidVol = 0.0;
         private double lastEntryBookAskVol = 0.0;
 
+        // Bar-level spread tracking
+        private double barSpreadSum = 0;
+        private double barSpreadMax = 0;
+        private int barSpreadCount = 0;
+        private double barSpreadMin = double.MaxValue;
+
         private double lastEntrySignalPrice = 0;
         private double lastEntrySessionHigh = 0;
         private double lastEntrySessionLow = 0;
@@ -515,6 +521,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool lastEntrySessionContextGateAllowed = true;
         private bool lastEntryMinSecsPass = true;
         private bool lastEntryMaxEscapeGlobalPass = true;
+        private bool lastEntrySpreadGatePass = true;
+        private bool lastEntryAccelSellOverheadBlockPass = true;
         #endregion
 
         #region OnStateChange
@@ -777,6 +785,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                 KL_AvoidMiddayChop = false;
                 KL_MiddayStart = DateTime.Parse("12:00", System.Globalization.CultureInfo.InvariantCulture);
                 KL_MiddayEnd = DateTime.Parse("14:00", System.Globalization.CultureInfo.InvariantCulture);
+
+                // SPREAD SAFETY GATE
+                UseSpreadGate = false;
+                MaxEntrySpreadTicks = 5.0;
+
+                // MOMENTUM CONTEXT BLOCK
+                UseAccelSellOverheadBlock = false;
             }
             else if (State == State.DataLoaded)
             {
@@ -2314,6 +2329,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 UseKeyLevelGate, KeyLevelProximityTicks, KL_AllowVWAP, KL_AllowPDH, KL_AllowPDL, KL_AllowIBH, KL_AllowIBL, KL_AllowPMH, KL_AllowPML, KL_AllowPOC,
                 KL_RequireDeltaAgreement, KL_RequireAbsorptionForReversal, KL_AvoidMiddayChop));
             Print(string.Format("     SPREAD TELEMETRY: Enabled (SignalSpread logged per trade; BookDepth pending OnMarketDepth() integration)"));
+            Print(string.Format("     SPREAD GATE     : Use={0} | MaxSpread={1:F1}T", UseSpreadGate, MaxEntrySpreadTicks));
+            Print(string.Format("     ACCEL-SELL BLOCK : Use={0}", UseAccelSellOverheadBlock));
 
             Print("-------------------------------------------------------------------------");
             Print(string.Format("[04] TIER A PROFILE  : ENABLED = {0} | Target Size: {1} to {2}", S3_Enable, S3_MinStackSize, S3_MaxStackSize));
@@ -2439,12 +2456,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print(string.Format("     [LIQUIDITY-RAW] Range: {0:F1}T | Secs: {1:F2} | R/1k: {2:F1}T | BarDelta: {3:F0} | Delta/Tick: {4:F1} | Delta/Vol: {5:F1}% | Escape: {6:F1}T | DomVol: {7:F1}% | Ratio: {8:F1}",
                 lastEntrySignalBarRangeTicks, lastEntrySignalBarSecs, lastEntryRangePer1kVolumeTicks, lastEntryBarDelta, lastEntryDeltaPerTick, lastEntryDeltaPctOfVolume,
                 lastEntryEscapeTicks, lastEntryDomVolPercent, lastEntryValidBullishRatio));
-            Print(string.Format("     [SPREAD-DEPTH] SignalSpread: {0:F1}T | AvgSpread: {1:F1}T | MaxSpread: {2:F1}T | BidVol: {3:F0} | AskVol: {4:F0}",
+            Print(string.Format("     [SPREAD-DEPTH] SignalSpread: {0:F1}T | AvgSpread: {1:F1}T | MaxSpread: {2:F1}T | BidVol: {3:F0} | AskVol: {4:F0} | GatePass: {5}",
                 lastEntrySignalSpread,
                 lastEntryAvgSpread,
                 lastEntryMaxSpread,
                 lastEntryBookBidVol,
-                lastEntryBookAskVol));
+                lastEntryBookAskVol,
+                lastEntrySpreadGatePass));
 
             if (lastEntryRangeBarMode)
                 Print(string.Format("     [RANGE-BAR] Pace: {0} | ClosePos: {1:P0} | Body: {2:P0} | Overlap: {3:P0} | LowWick: {4:P0} | UpWick: {5:P0}",
@@ -2486,6 +2504,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             Print(string.Format("     [DELTA-VELOCITY] ROC: {0:F1} | Accel: {1:F1} | Score: {2:F2} | Momentum: {3} | FilterEnabled: {4} | Pass: {5}",
                 lastEntryDeltaROC, lastEntryDeltaAccel, lastEntryDeltaVelocityScore, lastEntryDeltaMomentum, UseDeltaVelocityFilter, lastEntryPassDeltaVelocityFilter));
+
+            Print(string.Format("     [MOMENTUM-CTX] AccelSellOverheadBlock: Enabled={0} | Pass={1} | DeltaMomentum={2} | Context={3}",
+                UseAccelSellOverheadBlock, lastEntryAccelSellOverheadBlockPass, lastEntryDeltaMomentum, lastEntryContext));
 
             Print(string.Format("     [CD-ACCEL] Accel: {0:F1}% | OldSlope: {1:F1}% | Pass: {2}",
                 lastEntrySlopeAccel, lastEntryOlderSlope, lastEntryPassCdAccel));
@@ -2566,6 +2587,23 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 highestSeenPrice = averagePrice;
                 currentStopPrice = averagePrice - (StopLossTicks * TickSize);
+            }
+        }
+
+        protected override void OnMarketData(MarketDataEventArgs marketDataUpdate)
+        {
+            if (marketDataUpdate.MarketDataType == MarketDataType.Ask || marketDataUpdate.MarketDataType == MarketDataType.Bid)
+            {
+                double bid = GetCurrentBid();
+                double ask = GetCurrentAsk();
+                if (bid > 0 && ask > 0 && ask > bid)
+                {
+                    double spread = (ask - bid) / TickSize;
+                    barSpreadSum += spread;
+                    barSpreadCount++;
+                    if (spread > barSpreadMax) barSpreadMax = spread;
+                    if (spread < barSpreadMin) barSpreadMin = spread;
+                }
             }
         }
         #endregion
@@ -2733,6 +2771,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             #endregion
 
             if (!IsFirstTickOfBar) return;
+
+            // Reset bar-level spread tracking for the new bar
+            barSpreadSum = 0;
+            barSpreadMax = 0;
+            barSpreadCount = 0;
+            barSpreadMin = double.MaxValue;
 
             #region Adaptive Baseline Updates
             UpdateAdaptiveBaselines(vBarsType);
@@ -3242,6 +3286,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             #region Tier A Long Validation
             bool s3_long_valid = false;
+            double entrySpread = 0;
+            bool spreadGatePass = true;
+            bool accelSellOverheadPass = true;
 
             if (S3_Enable && maxBullishStack >= S3_MinStackSize && maxBullishStack <= S3_MaxStackSize)
             {
@@ -3416,6 +3463,27 @@ namespace NinjaTrader.NinjaScript.Strategies
                 bool passMaxEscapeGlobal = !UseMaxEscapeGlobal || escapeLongTicks <= MaxEscapeGlobalTicks;
                 if (!passMaxEscapeGlobal)
                     s3_long_valid = false;
+
+                // SPREAD SAFETY GATE
+                {
+                    double gateBid = GetCurrentBid();
+                    double gateAsk = GetCurrentAsk();
+                    if (gateBid > 0 && gateAsk > 0)
+                        entrySpread = (gateAsk - gateBid) / TickSize;
+                }
+                spreadGatePass = !UseSpreadGate || entrySpread <= MaxEntrySpreadTicks;
+                if (!spreadGatePass)
+                    s3_long_valid = false;
+
+                // MOMENTUM CONTEXT BLOCK: AccelSell + Overhead
+                if (UseAccelSellOverheadBlock && currentDeltaMomentum == DeltaMomentum.AccelSell)
+                {
+                    if (stackContextEnum == SessionContext.UpperCont || stackContextEnum == SessionContext.SessionHighBo || stackContextEnum == SessionContext.MidRange)
+                    {
+                        accelSellOverheadPass = false;
+                        s3_long_valid = false;
+                    }
+                }
                 // ─────────────────────────────────────────────────────────────────────────────
 
                 // 1. Capture the exact state of the global filters BEFORE the matrix touches it
@@ -3983,6 +4051,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                     lastEntrySessionContextGateAllowed = IsSessionContextAllowed(stackContextEnum);
                     lastEntryMinSecsPass = passMinBarSecs;
                     lastEntryMaxEscapeGlobalPass = passMaxEscapeGlobal;
+                    lastEntrySpreadGatePass = spreadGatePass;
+                    lastEntryAccelSellOverheadBlockPass = accelSellOverheadPass;
 
                     lastEntryBarIsClimax = isClimax;
                     lastEntryBarIsExhaustion = isExhaustion;
@@ -4166,13 +4236,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                         Print(string.Format("Immediate Entry | EntryBar={0:yyyy-MM-dd HH:mm:ss} | B1={1:HH:mm:ss} O1={2} C1={3}",
                             Time[0], Time[1], Open[1], Close[1]));
 
-                    // Capture spread telemetry at signal time
+                    // Spread telemetry — use bar-level accumulated data when available, fall back to instantaneous
                     double currentBid = GetCurrentBid();
                     double currentAsk = GetCurrentAsk();
-                    double currentSpread = (currentAsk - currentBid) / TickSize;
+                    double currentSpread = (currentAsk > 0 && currentBid > 0) ? (currentAsk - currentBid) / TickSize : 0;
                     lastEntrySignalSpread = currentSpread;
-                    lastEntryAvgSpread = currentSpread;  // Placeholder — same as signal spread until bar-level accumulation added
-                    lastEntryMaxSpread = currentSpread;  // Placeholder
+                    lastEntryAvgSpread = barSpreadCount > 0 ? barSpreadSum / barSpreadCount : currentSpread;
+                    lastEntryMaxSpread = barSpreadCount > 0 ? barSpreadMax : currentSpread;
                     lastEntryBookBidVol = 0;  // Placeholder pending OnMarketDepth() integration
                     lastEntryBookAskVol = 0;  // Placeholder pending OnMarketDepth() integration
 
@@ -5085,6 +5155,19 @@ namespace NinjaTrader.NinjaScript.Strategies
         [PropertyEditor("NinjaTrader.Gui.Tools.TimeEditorKey")]
         [Display(Name = "Midday End", Order = 15, GroupName = "08. KEY LEVELS")]
         public DateTime KL_MiddayEnd { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "01. Use Spread Safety Gate", Order = 1, GroupName = "03n. SPREAD SAFETY GATE")]
+        public bool UseSpreadGate { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1.0, 50.0)]
+        [Display(Name = "02. Max Entry Spread (Ticks)", Order = 2, GroupName = "03n. SPREAD SAFETY GATE")]
+        public double MaxEntrySpreadTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "01. Use AccelSell Overhead Block", Order = 1, GroupName = "03o. MOMENTUM CONTEXT BLOCK")]
+        public bool UseAccelSellOverheadBlock { get; set; }
         #endregion
     }
 }
