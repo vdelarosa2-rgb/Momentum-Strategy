@@ -1,4 +1,4 @@
-// Version: 2.50 - Key Level Telemetry Branch (Event-Level Context | Selector Simplification | Legacy Matrix Preserved)
+// Version: 2.51 - Per-Bar Regime Telemetry (Rolling Window Calibration Data)
 #region Using declarations
 using System;
 using System.Collections.Generic;
@@ -533,7 +533,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (State == State.SetDefaults)
             {
-                Description = "Institutional Imbalance Engine v2.50 (Key Level Telemetry Branch | Event-Level Context | Selector Simplification)";
+                Description = "Institutional Imbalance Engine v2.51 (Per-Bar Regime Telemetry | Rolling Window Calibration Data)";
                 Name = "MomentumSubsetEnhanced";
                 Calculate = Calculate.OnPriceChange;
                 EntriesPerDirection = 1;
@@ -2307,7 +2307,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (!UseTradeLogging) return;
 
             Print("=========================================================================");
-            Print("SETTINGS LOG | MomentumSubsetEnhanced v2.50 (Key Level Telemetry Branch | Event-Level Context | Selector Simplification)");
+            Print("SETTINGS LOG | MomentumSubsetEnhanced v2.51 (Per-Bar Regime Telemetry | Rolling Window Calibration Data)");
             Print("=========================================================================");
 
             Print(string.Format("[00]  DIRECTION      : Long={0}", AllowLongTrades));
@@ -2346,6 +2346,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 KL_RequireDeltaAgreement, KL_RequireAbsorptionForReversal, KL_AvoidMiddayChop));
             Print(string.Format("     SPREAD TELEMETRY: Enabled (SignalSpread logged per trade; BookDepth pending OnMarketDepth() integration)"));
             Print(string.Format("     SPREAD GATE     : Use={0} | MaxSpread={1:F1}T", UseSpreadGate, MaxEntrySpreadTicks));
+            Print(string.Format("     BAR-REGIME TEL  : Enabled (per-bar R1k+VolZ logged on every RTH bar for regime calibration)"));
             Print(string.Format("     ACCEL-SELL BLOCK : Use={0}", UseAccelSellOverheadBlock));
             Print(string.Format("     POC MIG GATE    : Use={0} | MinTicks={1:F1} | ExemptUpperCont={2}", UsePocMigrationGate, PocMigGateMinTicks, PocMigGateExemptUpperCont));
             Print(string.Format("     ACCEL-SELL SHB  : Use={0}", UseAccelSellSHBBlock));
@@ -3304,6 +3305,18 @@ namespace NinjaTrader.NinjaScript.Strategies
             string adaptiveRuleSummary = "";
             string matrixProofState = "MATRIX-OFF";
             string matrixBlockReason = "";
+            #endregion
+
+            #region Per-Bar Regime Telemetry
+            // Time[1] and Close[1] reference the just-confirmed bar; all regime metrics are calculated from confirmed bar data
+            if (UseTradeLogging && adaptiveReady && IsWithinNYSESession(Time[1]))
+            {
+                double barRegimeSessPos = GetSessionPosition(Close[1]);
+                string barRegimeContext = GetSessionContextString(GetStackContext(barRegimeSessPos));
+                Print(string.Format("[BAR-REGIME] Time={0:yyyy-MM-dd HH:mm:ss} | R1k={1:F1} | VolZ={2:F2} | BarVol={3:F0} | Range={4:F1}T | Secs={5:F2} | Delta={6:F0} | NormDelta={7:F1}% | SessPos={8:F2} | Context={9} | Momentum={10}",
+                    Time[1], rangePer1kVolumeTicks, volZScore, totalBarVol, signalBarRangeTicks, signalBarSecs,
+                    barDelta, normDeltaPct, barRegimeSessPos, barRegimeContext, GetDeltaMomentumString(currentDeltaMomentum)));
+            }
             #endregion
 
             #region Tier A Long Validation
