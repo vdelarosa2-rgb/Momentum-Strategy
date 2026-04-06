@@ -523,6 +523,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool lastEntryMaxEscapeGlobalPass = true;
         private bool lastEntrySpreadGatePass = true;
         private bool lastEntryAccelSellOverheadBlockPass = true;
+        private bool lastEntryPocMigGatePass = true;
+        private bool lastEntryAccelSellSHBBlockPass = true;
+        private bool lastEntryPocPosGatePass = true;
         #endregion
 
         #region OnStateChange
@@ -792,6 +795,19 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 // MOMENTUM CONTEXT BLOCK
                 UseAccelSellOverheadBlock = false;
+
+                // POC MIGRATION GATE
+                UsePocMigrationGate = false;
+                PocMigGateMinTicks = 7.0;
+                PocMigGateExemptUpperCont = true;
+
+                // ACCEL-SELL SHB BLOCK
+                UseAccelSellSHBBlock = false;
+
+                // POC POSITION GATE
+                UsePocPosGate = false;
+                PocPosGateMaxValue = 0.50;
+                PocPosGateSHBOnly = true;
             }
             else if (State == State.DataLoaded)
             {
@@ -2331,6 +2347,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print(string.Format("     SPREAD TELEMETRY: Enabled (SignalSpread logged per trade; BookDepth pending OnMarketDepth() integration)"));
             Print(string.Format("     SPREAD GATE     : Use={0} | MaxSpread={1:F1}T", UseSpreadGate, MaxEntrySpreadTicks));
             Print(string.Format("     ACCEL-SELL BLOCK : Use={0}", UseAccelSellOverheadBlock));
+            Print(string.Format("     POC MIG GATE    : Use={0} | MinTicks={1:F1} | ExemptUpperCont={2}", UsePocMigrationGate, PocMigGateMinTicks, PocMigGateExemptUpperCont));
+            Print(string.Format("     ACCEL-SELL SHB  : Use={0}", UseAccelSellSHBBlock));
+            Print(string.Format("     POC POS GATE    : Use={0} | MaxPOCPos={1:F2} | SHBOnly={2}", UsePocPosGate, PocPosGateMaxValue, PocPosGateSHBOnly));
 
             Print("-------------------------------------------------------------------------");
             Print(string.Format("[04] TIER A PROFILE  : ENABLED = {0} | Target Size: {1} to {2}", S3_Enable, S3_MinStackSize, S3_MaxStackSize));
@@ -2471,6 +2490,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print(string.Format("     [FOOTPRINT-RAW] ImbCount: {0}B/{1}S | ImbDensity: {2:F2}/T | Stack: {3} vs Opp: {4} | POCPos: {5:F2} | POCVol: {6:F0} ({7:F1}%) | LowZone: {8:F0} ({9:F1}%) | UpperZone: {10:F0} ({11:F1}%)",
                 lastEntryBullishImbalanceCount, lastEntryBearishImbalanceCount, lastEntryImbalanceDensity, lastEntryMaxBullishStack, lastEntryMaxBearishStack,
                 lastEntryPocPosition, lastEntryMaxVolAtPrice, lastEntryPocVolPct, lastEntryLowZoneVol, lastEntryLowZonePct, lastEntryUpperZoneVol, lastEntryUpperZonePct));
+            Print(string.Format("     [POC-POS-GATE] GateEnabled: {0} | Pass: {1} | POCPos: {2:F2}", UsePocPosGate, lastEntryPocPosGatePass, lastEntryPocPosition));
 
             Print(string.Format("     [MATRIX-PROFILE] Family: {0} | Pair: {1} | ConstVolMode: {2} | DisableBarVolFilters: {3} | RuleSet: {4}",
                 lastEntryAdaptiveFamily, lastEntrySpatialPair, lastEntryConstantVolumeMode, lastEntryDisableBarVolumeFilters, lastEntryAdaptiveRuleSummary));
@@ -2507,6 +2527,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             Print(string.Format("     [MOMENTUM-CTX] AccelSellOverheadBlock: Enabled={0} | Pass={1} | DeltaMomentum={2} | Context={3}",
                 UseAccelSellOverheadBlock, lastEntryAccelSellOverheadBlockPass, lastEntryDeltaMomentum, lastEntryContext));
+            Print(string.Format("     [ACCEL-SELL-SHB] BlockEnabled: {0} | Pass: {1}", UseAccelSellSHBBlock, lastEntryAccelSellSHBBlockPass));
 
             Print(string.Format("     [CD-ACCEL] Accel: {0:F1}% | OldSlope: {1:F1}% | Pass: {2}",
                 lastEntrySlopeAccel, lastEntryOlderSlope, lastEntryPassCdAccel));
@@ -2519,6 +2540,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             Print(string.Format("     [POC-MIG] Cur: {0:F2} | Prev1: {1:F2} | Prev2: {2:F2} | MigTicks: {3:F1} | RevUp: {4} | Pass: {5}",
                 lastEntryCurrentPoc, lastEntryPrevPoc1, lastEntryPrevPoc2, lastEntryPocMig1, lastEntryRevUp, lastEntryPassPocMig));
+            Print(string.Format("     [POC-MIG-GATE] GateEnabled: {0} | Pass: {1}", UsePocMigrationGate, lastEntryPocMigGatePass));
 
             Print(string.Format("     [AVWAP-DECISION] ActiveAnchor: {0} | Tier: {1} | Slope: {2} (Drop: {3:F1}T) | SignalDistBelow(C1): {4:F1}T | Reclaimed: {5}",
                 string.IsNullOrEmpty(lastEntryAvwapActiveAnchor) ? "N/A" : lastEntryAvwapActiveAnchor,
@@ -3289,6 +3311,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             double entrySpread = 0;
             bool spreadGatePass = true;
             bool accelSellOverheadPass = true;
+            bool pocMigGatePass = true;
+            bool accelSellSHBPass = true;
+            bool pocPosGatePass = true;
 
             if (S3_Enable && maxBullishStack >= S3_MinStackSize && maxBullishStack <= S3_MaxStackSize)
             {
@@ -3382,6 +3407,18 @@ namespace NinjaTrader.NinjaScript.Strategies
                     {
                         if (S3_RequirePocReversal && !revUp) s3_long_valid = false;
                         if (pMig1 / TickSize < S3_MinPocMigrationTicks) s3_long_valid = false;
+                    }
+                }
+
+                // POC MIGRATION GATE (global, context-aware)
+                if (UsePocMigrationGate)
+                {
+                    double migTicks = pMig1 / TickSize;
+                    bool isExempt = PocMigGateExemptUpperCont && stackContextEnum == SessionContext.UpperCont;
+                    if (!isExempt && migTicks < PocMigGateMinTicks)
+                    {
+                        pocMigGatePass = false;
+                        s3_long_valid = false;
                     }
                 }
 
@@ -3481,6 +3518,27 @@ namespace NinjaTrader.NinjaScript.Strategies
                     if (stackContextEnum == SessionContext.UpperCont || stackContextEnum == SessionContext.SessionHighBo || stackContextEnum == SessionContext.MidRange)
                     {
                         accelSellOverheadPass = false;
+                        s3_long_valid = false;
+                    }
+                }
+
+                // ACCEL-SELL SESS-HIGH-BO BLOCK
+                if (UseAccelSellSHBBlock && stackContextEnum == SessionContext.SessionHighBo)
+                {
+                    if (currentDeltaMomentum == DeltaMomentum.AccelSell)
+                    {
+                        accelSellSHBPass = false;
+                        s3_long_valid = false;
+                    }
+                }
+
+                // POC POSITION GATE (context-aware)
+                if (UsePocPosGate)
+                {
+                    bool contextApplies = !PocPosGateSHBOnly || stackContextEnum == SessionContext.SessionHighBo;
+                    if (contextApplies && pocPosition >= PocPosGateMaxValue)
+                    {
+                        pocPosGatePass = false;
                         s3_long_valid = false;
                     }
                 }
@@ -4053,6 +4111,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                     lastEntryMaxEscapeGlobalPass = passMaxEscapeGlobal;
                     lastEntrySpreadGatePass = spreadGatePass;
                     lastEntryAccelSellOverheadBlockPass = accelSellOverheadPass;
+                    lastEntryPocMigGatePass = pocMigGatePass;
+                    lastEntryAccelSellSHBBlockPass = accelSellSHBPass;
+                    lastEntryPocPosGatePass = pocPosGatePass;
 
                     lastEntryBarIsClimax = isClimax;
                     lastEntryBarIsExhaustion = isExhaustion;
@@ -5168,6 +5229,36 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "01. Use AccelSell Overhead Block", Order = 1, GroupName = "03o. MOMENTUM CONTEXT BLOCK")]
         public bool UseAccelSellOverheadBlock { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "01. Use POC Migration Gate", Order = 1, GroupName = "03p. POC MIGRATION GATE")]
+        public bool UsePocMigrationGate { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, 50.0)]
+        [Display(Name = "02. Min Migration Ticks", Order = 2, GroupName = "03p. POC MIGRATION GATE")]
+        public double PocMigGateMinTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "03. Exempt UPPER-CONT", Order = 3, GroupName = "03p. POC MIGRATION GATE")]
+        public bool PocMigGateExemptUpperCont { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "01. Block ACCEL-SELL in SESS-HIGH-BO", Order = 1, GroupName = "03q. ACCEL-SELL SHB BLOCK")]
+        public bool UseAccelSellSHBBlock { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "01. Use POCPos Gate", Order = 1, GroupName = "03r. POC POSITION GATE")]
+        public bool UsePocPosGate { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, 1.0)]
+        [Display(Name = "02. Max POCPos (block above)", Order = 2, GroupName = "03r. POC POSITION GATE")]
+        public double PocPosGateMaxValue { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "03. Apply Only in SESS-HIGH-BO", Order = 3, GroupName = "03r. POC POSITION GATE")]
+        public bool PocPosGateSHBOnly { get; set; }
         #endregion
     }
 }
