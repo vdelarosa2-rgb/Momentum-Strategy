@@ -538,10 +538,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         #region Microstructure Regime Tracking
         private Queue<double> r1kRollingBuffer = new Queue<double>();
-        private const int R1kRollingWindow = 20;
-        private double rollingR1k20 = 0.0;
+
+        private double rollingR1k = 0.0;
         private MicrostructureRegime currentMicroRegime = MicrostructureRegime.Warmup;
-        private double lastEntryRollingR1k20 = 0.0;
+        private double lastEntryRollingR1k = 0.0;
         private string lastEntryMicroRegime = "WARMUP";
         #endregion
 
@@ -606,6 +606,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 AllowDenseRegime = true;
                 AllowNormalMicroRegime = true;
                 AllowThinRegime = true;
+                R1kLookbackBars = 20;
 
                 // Climax/Exhaustion Filter
                 UseClimaxFilter = false;
@@ -962,7 +963,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (r1kRollingBuffer != null)
                 r1kRollingBuffer.Clear();
-            rollingR1k20 = 0.0;
+            rollingR1k = 0.0;
             currentMicroRegime = MicrostructureRegime.Warmup;
         }
 
@@ -1729,17 +1730,17 @@ namespace NinjaTrader.NinjaScript.Strategies
         private void UpdateMicrostructureRegime(double r1k)
         {
             r1kRollingBuffer.Enqueue(r1k);
-            if (r1kRollingBuffer.Count > R1kRollingWindow)
+            if (r1kRollingBuffer.Count > R1kLookbackBars)
                 r1kRollingBuffer.Dequeue();
 
-            if (r1kRollingBuffer.Count >= R1kRollingWindow)
+            if (r1kRollingBuffer.Count >= R1kLookbackBars)
             {
-                rollingR1k20 = r1kRollingBuffer.Average();
-                currentMicroRegime = ClassifyMicroRegime(rollingR1k20);
+                rollingR1k = r1kRollingBuffer.Average();
+                currentMicroRegime = ClassifyMicroRegime(rollingR1k);
             }
             else
             {
-                rollingR1k20 = 0.0;
+                rollingR1k = 0.0;
                 currentMicroRegime = MicrostructureRegime.Warmup;
             }
         }
@@ -2425,8 +2426,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print(string.Format("     SPREAD TELEMETRY: Enabled (SignalSpread logged per trade; BookDepth pending OnMarketDepth() integration)"));
             Print(string.Format("     SPREAD GATE     : Use={0} | MaxSpread={1:F1}T", UseSpreadGate, MaxEntrySpreadTicks));
             Print(string.Format("     BAR-REGIME TEL  : Enabled (per-bar R1k+VolZ logged on every RTH bar for regime calibration)"));
-            Print(string.Format("     MICRO-REGIME    : Enable={0} | Dense<{1:F1} | Thin>{2:F1} | AllowDense={3} | AllowNormal={4} | AllowThin={5}",
-                EnableRegimeFilter, RegimeDenseThreshold, RegimeThinThreshold, AllowDenseRegime, AllowNormalMicroRegime, AllowThinRegime));
+            Print(string.Format("     MICRO-REGIME    : Enable={0} | Lookback={1} | Dense<{2:F1} | Thin>{3:F1} | AllowDense={4} | AllowNormal={5} | AllowThin={6}",
+                EnableRegimeFilter, R1kLookbackBars, RegimeDenseThreshold, RegimeThinThreshold, AllowDenseRegime, AllowNormalMicroRegime, AllowThinRegime));
             Print(string.Format("     ACCEL-SELL BLOCK : Use={0}", UseAccelSellOverheadBlock));
             Print(string.Format("     POC MIG GATE    : Use={0} | MinTicks={1:F1} | ExemptUpperCont={2}", UsePocMigrationGate, PocMigGateMinTicks, PocMigGateExemptUpperCont));
             Print(string.Format("     ACCEL-SELL SHB  : Use={0}", UseAccelSellSHBBlock));
@@ -2596,8 +2597,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print(string.Format("     [VOL-REGIME] Regime: {0} | ZScore: {1:F2} | GateEnabled: {2} | GateAllowed: {3}",
                 lastEntryVolRegime, lastEntryVolZScore, UseVolatilityRegimeGate, lastEntryVolRegimeGateAllowed));
 
-            Print(string.Format("     [REGIME] Roll20R1k={0:F1} | Regime={1} | Thresholds={2:F1}/{3:F1}",
-                lastEntryRollingR1k20, lastEntryMicroRegime, RegimeDenseThreshold, RegimeThinThreshold));
+            Print(string.Format("     [REGIME] RollR1k={0:F1} | Regime={1} | Thresholds={2:F1}/{3:F1}",
+                lastEntryRollingR1k, lastEntryMicroRegime, RegimeDenseThreshold, RegimeThinThreshold));
 
             Print(string.Format("     [CLIMAX-EXHAUST] IsClimax: {0} | PrevClimax: {1} | IsExhaust: {2} | ClimaxScore: {3:F2} | ExhaustScore: {4:F2} | PrevVol: {5:F0} | CurVol: {6:F0} | PassClimax: {7} | PassExhaust: {8}",
                 lastEntryBarIsClimax, lastEntryPrevBarWasClimax, lastEntryBarIsExhaustion, lastEntryClimaxScore, lastEntryExhaustionScore,
@@ -3401,10 +3402,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 double barRegimeSessPos = GetSessionPosition(Close[1]);
                 string barRegimeContext = GetSessionContextString(GetStackContext(barRegimeSessPos));
-                Print(string.Format("[BAR-REGIME] Time={0:yyyy-MM-dd HH:mm:ss} | R1k={1:F1} | VolZ={2:F2} | BarVol={3:F0} | Range={4:F1}T | Secs={5:F2} | Delta={6:F0} | NormDelta={7:F1}% | SessPos={8:F2} | Context={9} | Momentum={10} | Roll20R1k={11:F1} | Regime={12}",
+                Print(string.Format("[BAR-REGIME] Time={0:yyyy-MM-dd HH:mm:ss} | R1k={1:F1} | VolZ={2:F2} | BarVol={3:F0} | Range={4:F1}T | Secs={5:F2} | Delta={6:F0} | NormDelta={7:F1}% | SessPos={8:F2} | Context={9} | Momentum={10} | RollR1k={11:F1} | Regime={12}",
                     Time[1], rangePer1kVolumeTicks, volZScore, totalBarVol, signalBarRangeTicks, signalBarSecs,
                     barDelta, normDeltaPct, barRegimeSessPos, barRegimeContext, GetDeltaMomentumString(currentDeltaMomentum),
-                    rollingR1k20, GetMicroRegimeString(currentMicroRegime)));
+                    rollingR1k, GetMicroRegimeString(currentMicroRegime)));
             }
             #endregion
 
@@ -3593,8 +3594,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (!IsMicroRegimeAllowed())
                 {
                     if (UseTradeLogging)
-                        Print(string.Format("[REGIME-BLOCK] Regime={0} | Roll20R1k={1:F1} | Signal skipped",
-                            GetMicroRegimeString(currentMicroRegime), rollingR1k20));
+                        Print(string.Format("[REGIME-BLOCK] Regime={0} | RollR1k={1:F1} | Signal skipped",
+                            GetMicroRegimeString(currentMicroRegime), rollingR1k));
                     s3_long_valid = false;
                 }
 
@@ -4217,7 +4218,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     lastEntryVolRegimeGateAllowed = volRegimeGateAllowed;
 
                     // Microstructure regime telemetry
-                    lastEntryRollingR1k20 = rollingR1k20;
+                    lastEntryRollingR1k = rollingR1k;
                     lastEntryMicroRegime = GetMicroRegimeString(currentMicroRegime);
 
                     // Session context & signal quality gate telemetry
@@ -4718,6 +4719,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "Allow Thin Regime", Order = 6, GroupName = "03g. MICROSTRUCTURE REGIME FILTER")]
         public bool AllowThinRegime { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(5, 100)]
+        [Display(Name = "R1k Lookback Bars", Order = 7, GroupName = "03g. MICROSTRUCTURE REGIME FILTER")]
+        public int R1kLookbackBars { get; set; }
 
         // ==============================================================================
         // 03h: ANCHORED VWAP FILTER (4-Tier Engine)
