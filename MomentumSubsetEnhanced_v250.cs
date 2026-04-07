@@ -579,11 +579,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 EdgeHandlingMode = ImbalanceEdgeHandlingMode.HorizontalFallback;
                 AllowInfiniteEdgeRatio = false;
 
-                UseOpposingDominanceAbort = false;
-                OpposingAbortDeltaLimit = 30.0;
-                UseAbsorptionWallAbort = false;
-                AbsorptionAbortVolume = 140;
-                GlobalDivLookback = 5;
                 ResetAdaptiveOnDayTransition = true;
 
                 // Volatility Regime Gate
@@ -1664,13 +1659,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private MarketRegime GetMarketRegime(NinjaTrader.NinjaScript.BarsTypes.VolumetricBarsType vBarsType)
         {
-            if (CurrentBar < GlobalDivLookback + 1)
+            const int divLookback = 5;
+            if (CurrentBar < divLookback + 1)
                 return MarketRegime.Flat;
 
-            double pChange = Close[1] - Close[1 + GlobalDivLookback];
+            double pChange = Close[1] - Close[1 + divLookback];
 
             double dChange = 0;
-            for (int i = 0; i < GlobalDivLookback; i++)
+            for (int i = 0; i < divLookback; i++)
             {
                 dChange += vBarsType.Volumes[CurrentBar - 1 - i].BarDelta;
             }
@@ -2392,7 +2388,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print(string.Format("[00b] REGIMES        : BullDiv={0} | BearDiv={1} | BullConv={2} | BearConv={3}", AllowBullDiv, AllowBearDiv, AllowBullConv, AllowBearConv));
             Print(string.Format("[01]  COOLDOWN       : Use={0} | Minutes={1}", UseCooldown, CooldownMinutes));
             Print(string.Format("[02]  IMBALANCE CORE : Ratio={0:F1} to {1:F1} | MinImbVol={2} | AllowInfEdge={3}", ImbalanceRatio, MaxImbalanceRatio, MinImbalanceVolume, AllowInfiniteEdgeRatio));
-            Print(string.Format("[02b] GLOBAL-IMBALANCE-CORE : OppDom={0} (Lim={1:F1}) | AbsorbWall={2} | DivLookback={3} | ResetAdaptDaily={4}", UseOpposingDominanceAbort, OpposingAbortDeltaLimit, UseAbsorptionWallAbort, GlobalDivLookback, ResetAdaptiveOnDayTransition));
+            Print(string.Format("[02b] GLOBAL-IMBALANCE-CORE : ResetAdaptDaily={0}", ResetAdaptiveOnDayTransition));
 
             Print("-------------------------------------------------------------------------");
             Print("[NEW GLOBAL FILTERS]");
@@ -2852,18 +2848,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                                     Time[0].ToString("HH:mm:ss"), steps, mfeTicks, currentStopPrice));
                         }
                     }
-                }
-
-                // Kill Switch Checks
-                if (UseOpposingDominanceAbort && liveVBar.CumulativeDelta <= -OpposingAbortDeltaLimit)
-                {
-                    ExitLong("Abort-Dom", "MomLE");
-                    return;
-                }
-                else if (UseAbsorptionWallAbort && liveVBar.TotalVolume >= AbsorptionAbortVolume && Close[0] < Open[0])
-                {
-                    ExitLong("Abort-Vol", "MomLE");
-                    return;
                 }
             }
             #endregion
@@ -4425,30 +4409,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         public bool AllowInfiniteEdgeRatio { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Use Opposing Dominance Abort", Order = 7, GroupName = "02. GLOBAL: Imbalance Core")]
-        public bool UseOpposingDominanceAbort { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(1.0, 1000.0)]
-        [Display(Name = "Opposing Abort Live Delta Limit", Order = 8, GroupName = "02. GLOBAL: Imbalance Core")]
-        public double OpposingAbortDeltaLimit { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Use Absorption Wall Abort", Order = 9, GroupName = "02. GLOBAL: Imbalance Core")]
-        public bool UseAbsorptionWallAbort { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(10, 1000)]
-        [Display(Name = "Absorption Abort Volume", Order = 10, GroupName = "02. GLOBAL: Imbalance Core")]
-        public int AbsorptionAbortVolume { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(1, 100)]
-        [Display(Name = "Global Divergence Lookback (Bars)", Order = 11, GroupName = "02. GLOBAL: Imbalance Core")]
-        public int GlobalDivLookback { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Reset Adaptive Buffers Daily", Order = 12, GroupName = "02. GLOBAL: Imbalance Core")]
+        [Display(Name = "Reset Adaptive Buffers Daily", Order = 7, GroupName = "02. GLOBAL: Imbalance Core")]
         public bool ResetAdaptiveOnDayTransition { get; set; }
 
         // ==============================================================================
