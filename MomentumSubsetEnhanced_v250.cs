@@ -1753,7 +1753,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 case MicrostructureRegime.Normal: return AllowNormalMicroRegime;
                 case MicrostructureRegime.Thin:   return AllowThinRegime;
                 case MicrostructureRegime.Warmup: return AllowWarmupRegime;
-                default: return true;
+                default: return true; // Fallback for any future regime values not yet enumerated
             }
         }
         #endregion
@@ -2392,7 +2392,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print(string.Format("[00b] REGIMES        : BullDiv={0} | BearDiv={1} | BullConv={2} | BearConv={3}", AllowBullDiv, AllowBearDiv, AllowBullConv, AllowBearConv));
             Print(string.Format("[01]  COOLDOWN       : Use={0} | Minutes={1}", UseCooldown, CooldownMinutes));
             Print(string.Format("[02]  IMBALANCE CORE : Ratio={0:F1} to {1:F1} | MinImbVol={2} | AllowInfEdge={3}", ImbalanceRatio, MaxImbalanceRatio, MinImbalanceVolume, AllowInfiniteEdgeRatio));
-            Print(string.Format("[02b] GLOBAL-CORE   : OppDom={0} (Lim={1:F1}) | AbsorbWall={2} | DivLookback={3} | ResetAdaptDaily={4}", UseOpposingDominanceAbort, OpposingAbortDeltaLimit, UseAbsorptionWallAbort, GlobalDivLookback, ResetAdaptiveOnDayTransition));
+            Print(string.Format("[02b] GLOBAL-IMBALANCE-CORE : OppDom={0} (Lim={1:F1}) | AbsorbWall={2} | DivLookback={3} | ResetAdaptDaily={4}", UseOpposingDominanceAbort, OpposingAbortDeltaLimit, UseAbsorptionWallAbort, GlobalDivLookback, ResetAdaptiveOnDayTransition));
 
             Print("-------------------------------------------------------------------------");
             Print("[NEW GLOBAL FILTERS]");
