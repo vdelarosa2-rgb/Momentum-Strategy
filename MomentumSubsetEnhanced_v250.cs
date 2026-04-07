@@ -1404,13 +1404,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                 case SessionLocationBucket.Upper:
                     if (cheapVa) return AdaptiveContextFamily.LocationConflict;
                     if (neutralVa) return AdaptiveContextFamily.UpperValueFriction;
-                    if (richVa) return AdaptiveContextFamily.CeilingBreakout;
+                    if (richVa) return AdaptiveContextFamily.UpperValueFriction;  // Was CeilingBreakout — reclassified per Logs 17 analysis
                     break;
 
                 case SessionLocationBucket.Ceiling:
                     if (cheapVa) return AdaptiveContextFamily.LocationConflict;
                     if (neutralVa) return AdaptiveContextFamily.UpperValueFriction;
-                    if (richVa) return AdaptiveContextFamily.CeilingBreakout;
+                    if (richVa) return AdaptiveContextFamily.UpperValueFriction;  // Was CeilingBreakout — reclassified per Logs 17 analysis
                     break;
             }
 
