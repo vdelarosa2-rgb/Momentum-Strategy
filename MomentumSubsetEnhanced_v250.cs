@@ -538,7 +538,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         #region Microstructure Regime Tracking
         private Queue<double> r1kRollingBuffer = new Queue<double>();
-        private const int R1kRollingWindow = 20;
+
         private double rollingR1k20 = 0.0;
         private MicrostructureRegime currentMicroRegime = MicrostructureRegime.Warmup;
         private double lastEntryRollingR1k20 = 0.0;
@@ -601,6 +601,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 // Microstructure Regime Filter
                 EnableRegimeFilter = false;
+                R1kRollingWindowBars = 20;  // Default: 20 bars (good for 22-range); use 30 for 40-range bars
                 RegimeDenseThreshold = 150.0;
                 RegimeThinThreshold = 300.0;
                 AllowDenseRegime = true;
@@ -1729,10 +1730,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         private void UpdateMicrostructureRegime(double r1k)
         {
             r1kRollingBuffer.Enqueue(r1k);
-            if (r1kRollingBuffer.Count > R1kRollingWindow)
+            if (r1kRollingBuffer.Count > R1kRollingWindowBars)
                 r1kRollingBuffer.Dequeue();
 
-            if (r1kRollingBuffer.Count >= R1kRollingWindow)
+            if (r1kRollingBuffer.Count >= R1kRollingWindowBars)
             {
                 rollingR1k20 = r1kRollingBuffer.Average();
                 currentMicroRegime = ClassifyMicroRegime(rollingR1k20);
@@ -2425,8 +2426,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print(string.Format("     SPREAD TELEMETRY: Enabled (SignalSpread logged per trade; BookDepth pending OnMarketDepth() integration)"));
             Print(string.Format("     SPREAD GATE     : Use={0} | MaxSpread={1:F1}T", UseSpreadGate, MaxEntrySpreadTicks));
             Print(string.Format("     BAR-REGIME TEL  : Enabled (per-bar R1k+VolZ logged on every RTH bar for regime calibration)"));
-            Print(string.Format("     MICRO-REGIME    : Enable={0} | Dense<{1:F1} | Thin>{2:F1} | AllowDense={3} | AllowNormal={4} | AllowThin={5}",
-                EnableRegimeFilter, RegimeDenseThreshold, RegimeThinThreshold, AllowDenseRegime, AllowNormalMicroRegime, AllowThinRegime));
+            Print(string.Format("     MICRO-REGIME    : Enable={0} | Lookback={1} | Dense<{2:F1} | Thin>{3:F1} | AllowDense={4} | AllowNormal={5} | AllowThin={6}",
+                EnableRegimeFilter, R1kRollingWindowBars, RegimeDenseThreshold, RegimeThinThreshold, AllowDenseRegime, AllowNormalMicroRegime, AllowThinRegime));
             Print(string.Format("     ACCEL-SELL BLOCK : Use={0}", UseAccelSellOverheadBlock));
             Print(string.Format("     POC MIG GATE    : Use={0} | MinTicks={1:F1} | ExemptUpperCont={2}", UsePocMigrationGate, PocMigGateMinTicks, PocMigGateExemptUpperCont));
             Print(string.Format("     ACCEL-SELL SHB  : Use={0}", UseAccelSellSHBBlock));
@@ -4698,25 +4699,30 @@ namespace NinjaTrader.NinjaScript.Strategies
         public bool EnableRegimeFilter { get; set; }
 
         [NinjaScriptProperty]
+        [Range(5, 100)]
+        [Display(Name = "R1k Rolling Window (Bars)", Order = 2, GroupName = "03g. MICROSTRUCTURE REGIME FILTER")]
+        public int R1kRollingWindowBars { get; set; }
+
+        [NinjaScriptProperty]
         [Range(0.0, 10000.0)]
-        [Display(Name = "Dense Threshold (R1k <)", Order = 2, GroupName = "03g. MICROSTRUCTURE REGIME FILTER")]
+        [Display(Name = "Dense Threshold (R1k <)", Order = 3, GroupName = "03g. MICROSTRUCTURE REGIME FILTER")]
         public double RegimeDenseThreshold { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.0, 10000.0)]
-        [Display(Name = "Thin Threshold (R1k >)", Order = 3, GroupName = "03g. MICROSTRUCTURE REGIME FILTER")]
+        [Display(Name = "Thin Threshold (R1k >)", Order = 4, GroupName = "03g. MICROSTRUCTURE REGIME FILTER")]
         public double RegimeThinThreshold { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Allow Dense Regime", Order = 4, GroupName = "03g. MICROSTRUCTURE REGIME FILTER")]
+        [Display(Name = "Allow Dense Regime", Order = 5, GroupName = "03g. MICROSTRUCTURE REGIME FILTER")]
         public bool AllowDenseRegime { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Allow Normal Regime", Order = 5, GroupName = "03g. MICROSTRUCTURE REGIME FILTER")]
+        [Display(Name = "Allow Normal Regime", Order = 6, GroupName = "03g. MICROSTRUCTURE REGIME FILTER")]
         public bool AllowNormalMicroRegime { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Allow Thin Regime", Order = 6, GroupName = "03g. MICROSTRUCTURE REGIME FILTER")]
+        [Display(Name = "Allow Thin Regime", Order = 7, GroupName = "03g. MICROSTRUCTURE REGIME FILTER")]
         public bool AllowThinRegime { get; set; }
 
         // ==============================================================================
