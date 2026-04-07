@@ -391,7 +391,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool lastEntryDisableBarVolumeFilters = false;
         private string lastEntrySessionAxis = "";
         private string lastEntrySpatialPair = "";
-        private bool lastEntryCeilingAboveVAHBlocked = false;
 
         // Spread & Book Depth telemetry
         private double lastEntrySignalSpread = 0.0;
@@ -529,19 +528,15 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool lastEntrySessionContextGateAllowed = true;
         private bool lastEntryMinSecsPass = true;
         private bool lastEntryMaxEscapeGlobalPass = true;
-        private bool lastEntrySpreadGatePass = true;
-        private bool lastEntryAccelSellOverheadBlockPass = true;
-        private bool lastEntryPocMigGatePass = true;
-        private bool lastEntryAccelSellSHBBlockPass = true;
-        private bool lastEntryPocPosGatePass = true;
+        private bool lastEntryAdaptive40RangeFilterPass = true;
         #endregion
 
         #region Microstructure Regime Tracking
         private Queue<double> r1kRollingBuffer = new Queue<double>();
 
-        private double rollingR1k20 = 0.0;
+        private double rollingR1k = 0.0;
         private MicrostructureRegime currentMicroRegime = MicrostructureRegime.Warmup;
-        private double lastEntryRollingR1k20 = 0.0;
+        private double lastEntryRollingR1k = 0.0;
         private string lastEntryMicroRegime = "WARMUP";
         #endregion
 
@@ -607,6 +602,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 AllowDenseRegime = true;
                 AllowNormalMicroRegime = true;
                 AllowThinRegime = true;
+                AllowWarmupRegime = false;
 
                 // Climax/Exhaustion Filter
                 UseClimaxFilter = false;
@@ -614,6 +610,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 RequirePostClimaxEntry = false;
                 UseExhaustionFilter = false;
                 RequireExhaustionSetup = false;
+
+                // Adaptive 40 Range Filter
+                UseAdaptive40RangeFilter = false;
+                Block_LowerCont_AccelBuy = true;
+                Block_MidRange_AccelBuy = true;
+                Block_NIC1 = true;
 
                 // Value Area Filter
                 UseValueAreaFilter = false;
@@ -674,7 +676,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 UseAdaptiveContextMatrix = false;
                 AutoDisableBarVolumeFiltersOnConstantVolume = true;
                 ShadowMatrixMode = false;
-                UseCeilingAboveVAHBlock = false;
                 AdaptiveBasementMinDomVol = 5.0;
                 AdaptiveBasementMinEscape = -10.0;
                 AdaptiveBasementRequireDeltaImprovement = true;
@@ -814,26 +815,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 KL_AvoidMiddayChop = false;
                 KL_MiddayStart = DateTime.Parse("12:00", System.Globalization.CultureInfo.InvariantCulture);
                 KL_MiddayEnd = DateTime.Parse("14:00", System.Globalization.CultureInfo.InvariantCulture);
-
-                // SPREAD SAFETY GATE
-                UseSpreadGate = false;
-                MaxEntrySpreadTicks = 5.0;
-
-                // MOMENTUM CONTEXT BLOCK
-                UseAccelSellOverheadBlock = false;
-
-                // POC MIGRATION GATE
-                UsePocMigrationGate = false;
-                PocMigGateMinTicks = 7.0;
-                PocMigGateExemptUpperCont = true;
-
-                // ACCEL-SELL SHB BLOCK
-                UseAccelSellSHBBlock = false;
-
-                // POC POSITION GATE
-                UsePocPosGate = false;
-                PocPosGateMaxValue = 0.50;
-                PocPosGateSHBOnly = true;
             }
             else if (State == State.DataLoaded)
             {
@@ -963,7 +944,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (r1kRollingBuffer != null)
                 r1kRollingBuffer.Clear();
-            rollingR1k20 = 0.0;
+            rollingR1k = 0.0;
             currentMicroRegime = MicrostructureRegime.Warmup;
         }
 
@@ -1735,12 +1716,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (r1kRollingBuffer.Count >= R1kRollingWindowBars)
             {
-                rollingR1k20 = r1kRollingBuffer.Average();
-                currentMicroRegime = ClassifyMicroRegime(rollingR1k20);
+                rollingR1k = r1kRollingBuffer.Average();
+                currentMicroRegime = ClassifyMicroRegime(rollingR1k);
             }
             else
             {
-                rollingR1k20 = 0.0;
+                rollingR1k = 0.0;
                 currentMicroRegime = MicrostructureRegime.Warmup;
             }
         }
@@ -1771,7 +1752,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 case MicrostructureRegime.Dense:  return AllowDenseRegime;
                 case MicrostructureRegime.Normal: return AllowNormalMicroRegime;
                 case MicrostructureRegime.Thin:   return AllowThinRegime;
-                default: return true; // Warmup: allow all trades
+                case MicrostructureRegime.Warmup: return AllowWarmupRegime;
+                default: return true;
             }
         }
         #endregion
@@ -1836,6 +1818,23 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             return passClimax && passExhaustion;
+        }
+        #endregion
+
+        #region Helper Methods - Adaptive 40 Range Filter
+        private bool EvaluateAdaptive40RangeFilter(SessionContext sessionContext, DeltaMomentum deltaMomentum, int netImbCount)
+        {
+            if (!UseAdaptive40RangeFilter) return true;
+            if (currentMicroRegime != MicrostructureRegime.Normal) return true;
+
+            if (Block_LowerCont_AccelBuy && sessionContext == SessionContext.LowerCont && deltaMomentum == DeltaMomentum.AccelBuy)
+                return false;
+            if (Block_MidRange_AccelBuy && sessionContext == SessionContext.MidRange && deltaMomentum == DeltaMomentum.AccelBuy)
+                return false;
+            if (Block_NIC1 && netImbCount == 1)
+                return false;
+
+            return true;
         }
         #endregion
 
@@ -2393,7 +2392,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print(string.Format("[00b] REGIMES        : BullDiv={0} | BearDiv={1} | BullConv={2} | BearConv={3}", AllowBullDiv, AllowBearDiv, AllowBullConv, AllowBearConv));
             Print(string.Format("[01]  COOLDOWN       : Use={0} | Minutes={1}", UseCooldown, CooldownMinutes));
             Print(string.Format("[02]  IMBALANCE CORE : Ratio={0:F1} to {1:F1} | MinImbVol={2} | AllowInfEdge={3}", ImbalanceRatio, MaxImbalanceRatio, MinImbalanceVolume, AllowInfiniteEdgeRatio));
-            Print(string.Format("[03]  KILL SWITCHES  : OppDom={0} (Lim={1:F1}) | AbsorbWall={2} | DivLookback={3} | ResetAdaptDaily={4}", UseOpposingDominanceAbort, OpposingAbortDeltaLimit, UseAbsorptionWallAbort, GlobalDivLookback, ResetAdaptiveOnDayTransition));
+            Print(string.Format("[02b] GLOBAL-CORE   : OppDom={0} (Lim={1:F1}) | AbsorbWall={2} | DivLookback={3} | ResetAdaptDaily={4}", UseOpposingDominanceAbort, OpposingAbortDeltaLimit, UseAbsorptionWallAbort, GlobalDivLookback, ResetAdaptiveOnDayTransition));
 
             Print("-------------------------------------------------------------------------");
             Print("[NEW GLOBAL FILTERS]");
@@ -2407,7 +2406,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 UseSessionContextFilter, Session_AllowLowRev, Session_AllowLowerCont, Session_AllowMidRange, Session_AllowUpperCont, Session_AllowHighBo));
             Print(string.Format("     ADAPT MATRIX    : Use={0} | ConstVolAutoOff={1} | ShadowMode={2} | CeilingTrapAbs%={3:F1} | Pair/Family thresholds are internally calibrated by context and bar type",
                 UseAdaptiveContextMatrix, AutoDisableBarVolumeFiltersOnConstantVolume, ShadowMatrixMode, AdaptiveCeilingTrapAbsorptionPct));
-            Print(string.Format("     CEILING VA BLOCK : UseCeilingAboveVAHBlock={0}", UseCeilingAboveVAHBlock));
             Print(string.Format("     RANGE BAR ADAPT : Use={0} | Fast<={1:F0}s | Slow>={2:F0}s | ContClose>={3:P0} | SlowClose>={4:P0} | MaxOverlap<={5:P0} | RejWick>={6:P0}",
                 UseRangeBarAdaptation, RangeFastBarSecsThreshold, RangeSlowBarSecsThreshold, RangeContinuationCloseMinPct, RangeStrongSlowBarCloseMinPct, RangeMaxOverlapPct, RangeMinRejectionWickPct));
             Print(string.Format("     DELTA VELOCITY  : Use={0} | Lookback={1} | MinROC={2:F1} | ReqAccel={3} | BlockAccelSell={4}",
@@ -2424,14 +2422,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 UseKeyLevelGate, KeyLevelProximityTicks, KL_AllowVWAP, KL_AllowPDH, KL_AllowPDL, KL_AllowIBH, KL_AllowIBL, KL_AllowPMH, KL_AllowPML, KL_AllowPOC,
                 KL_RequireDeltaAgreement, KL_RequireAbsorptionForReversal, KL_AvoidMiddayChop));
             Print(string.Format("     SPREAD TELEMETRY: Enabled (SignalSpread logged per trade; BookDepth pending OnMarketDepth() integration)"));
-            Print(string.Format("     SPREAD GATE     : Use={0} | MaxSpread={1:F1}T", UseSpreadGate, MaxEntrySpreadTicks));
             Print(string.Format("     BAR-REGIME TEL  : Enabled (per-bar R1k+VolZ logged on every RTH bar for regime calibration)"));
-            Print(string.Format("     MICRO-REGIME    : Enable={0} | Lookback={1} | Dense<{2:F1} | Thin>{3:F1} | AllowDense={4} | AllowNormal={5} | AllowThin={6}",
-                EnableRegimeFilter, R1kRollingWindowBars, RegimeDenseThreshold, RegimeThinThreshold, AllowDenseRegime, AllowNormalMicroRegime, AllowThinRegime));
-            Print(string.Format("     ACCEL-SELL BLOCK : Use={0}", UseAccelSellOverheadBlock));
-            Print(string.Format("     POC MIG GATE    : Use={0} | MinTicks={1:F1} | ExemptUpperCont={2}", UsePocMigrationGate, PocMigGateMinTicks, PocMigGateExemptUpperCont));
-            Print(string.Format("     ACCEL-SELL SHB  : Use={0}", UseAccelSellSHBBlock));
-            Print(string.Format("     POC POS GATE    : Use={0} | MaxPOCPos={1:F2} | SHBOnly={2}", UsePocPosGate, PocPosGateMaxValue, PocPosGateSHBOnly));
+            Print(string.Format("     MICRO-REGIME    : Enable={0} | Lookback={1} | Dense<{2:F1} | Thin>{3:F1} | AllowDense={4} | AllowNormal={5} | AllowThin={6} | AllowWarmup={7}",
+                EnableRegimeFilter, R1kRollingWindowBars, RegimeDenseThreshold, RegimeThinThreshold, AllowDenseRegime, AllowNormalMicroRegime, AllowThinRegime, AllowWarmupRegime));
+            Print(string.Format("     ADAPTIVE-40-RANGE: Use={0} | LowerCont+AccelBuy={1} | MidRange+AccelBuy={2} | NIC=1={3}",
+                UseAdaptive40RangeFilter, Block_LowerCont_AccelBuy, Block_MidRange_AccelBuy, Block_NIC1));
 
             Print("-------------------------------------------------------------------------");
             Print(string.Format("[04] TIER A PROFILE  : ENABLED = {0} | Target Size: {1} to {2}", S3_Enable, S3_MinStackSize, S3_MaxStackSize));
@@ -2557,13 +2552,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print(string.Format("     [LIQUIDITY-RAW] Range: {0:F1}T | Secs: {1:F2} | R/1k: {2:F1}T | BarDelta: {3:F0} | Delta/Tick: {4:F1} | Delta/Vol: {5:F1}% | Escape: {6:F1}T | DomVol: {7:F1}% | Ratio: {8:F1}",
                 lastEntrySignalBarRangeTicks, lastEntrySignalBarSecs, lastEntryRangePer1kVolumeTicks, lastEntryBarDelta, lastEntryDeltaPerTick, lastEntryDeltaPctOfVolume,
                 lastEntryEscapeTicks, lastEntryDomVolPercent, lastEntryValidBullishRatio));
-            Print(string.Format("     [SPREAD-DEPTH] SignalSpread: {0:F1}T | AvgSpread: {1:F1}T | MaxSpread: {2:F1}T | BidVol: {3:F0} | AskVol: {4:F0} | GatePass: {5}",
+            Print(string.Format("     [SPREAD-DEPTH] SignalSpread: {0:F1}T | AvgSpread: {1:F1}T | MaxSpread: {2:F1}T | BidVol: {3:F0} | AskVol: {4:F0}",
                 lastEntrySignalSpread,
                 lastEntryAvgSpread,
                 lastEntryMaxSpread,
                 lastEntryBookBidVol,
-                lastEntryBookAskVol,
-                lastEntrySpreadGatePass));
+                lastEntryBookAskVol));
 
             if (lastEntryRangeBarMode)
                 Print(string.Format("     [RANGE-BAR] Pace: {0} | ClosePos: {1:P0} | Body: {2:P0} | Overlap: {3:P0} | LowWick: {4:P0} | UpWick: {5:P0}",
@@ -2572,13 +2566,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print(string.Format("     [FOOTPRINT-RAW] ImbCount: {0}B/{1}S | ImbDensity: {2:F2}/T | Stack: {3} vs Opp: {4} | POCPos: {5:F2} | POCVol: {6:F0} ({7:F1}%) | LowZone: {8:F0} ({9:F1}%) | UpperZone: {10:F0} ({11:F1}%)",
                 lastEntryBullishImbalanceCount, lastEntryBearishImbalanceCount, lastEntryImbalanceDensity, lastEntryMaxBullishStack, lastEntryMaxBearishStack,
                 lastEntryPocPosition, lastEntryMaxVolAtPrice, lastEntryPocVolPct, lastEntryLowZoneVol, lastEntryLowZonePct, lastEntryUpperZoneVol, lastEntryUpperZonePct));
-            Print(string.Format("     [POC-POS-GATE] GateEnabled: {0} | Pass: {1} | POCPos: {2:F2}", UsePocPosGate, lastEntryPocPosGatePass, lastEntryPocPosition));
 
             Print(string.Format("     [MATRIX-PROFILE] Family: {0} | Pair: {1} | ConstVolMode: {2} | DisableBarVolFilters: {3} | RuleSet: {4}",
                 lastEntryAdaptiveFamily, lastEntrySpatialPair, lastEntryConstantVolumeMode, lastEntryDisableBarVolumeFilters, lastEntryAdaptiveRuleSummary));
 
-            Print(string.Format("     [MATRIX-STATE] BaseStack: {0} | PreMatrix: {1} | Matrix: {2} | Proofs: {3} | VerdictReason: {4} | CeilingVABlocked: {5}",
-                lastEntryBaseStackPass, lastEntryPreMatrixPass, lastEntryMatrixVerdict, lastEntryMatrixProofState, lastEntryMatrixBlockReason, lastEntryCeilingAboveVAHBlocked));
+            Print(string.Format("     [MATRIX-STATE] BaseStack: {0} | PreMatrix: {1} | Matrix: {2} | Proofs: {3} | VerdictReason: {4}",
+                lastEntryBaseStackPass, lastEntryPreMatrixPass, lastEntryMatrixVerdict, lastEntryMatrixProofState, lastEntryMatrixBlockReason));
 
             if (ShadowMatrixMode)
             {
@@ -2597,8 +2590,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print(string.Format("     [VOL-REGIME] Regime: {0} | ZScore: {1:F2} | GateEnabled: {2} | GateAllowed: {3}",
                 lastEntryVolRegime, lastEntryVolZScore, UseVolatilityRegimeGate, lastEntryVolRegimeGateAllowed));
 
-            Print(string.Format("     [REGIME] Roll20R1k={0:F1} | Regime={1} | Thresholds={2:F1}/{3:F1}",
-                lastEntryRollingR1k20, lastEntryMicroRegime, RegimeDenseThreshold, RegimeThinThreshold));
+            Print(string.Format("     [REGIME] RollR1k={0:F1} | Regime={1} | Thresholds={2:F1}/{3:F1}",
+                lastEntryRollingR1k, lastEntryMicroRegime, RegimeDenseThreshold, RegimeThinThreshold));
+
+            Print(string.Format("     [ADAPTIVE-40-RANGE] Enabled={0} | Pass={1} | Regime={2} | Context={3} | Momentum={4}",
+                UseAdaptive40RangeFilter, lastEntryAdaptive40RangeFilterPass, lastEntryMicroRegime, lastEntryContext, lastEntryDeltaMomentum));
 
             Print(string.Format("     [CLIMAX-EXHAUST] IsClimax: {0} | PrevClimax: {1} | IsExhaust: {2} | ClimaxScore: {3:F2} | ExhaustScore: {4:F2} | PrevVol: {5:F0} | CurVol: {6:F0} | PassClimax: {7} | PassExhaust: {8}",
                 lastEntryBarIsClimax, lastEntryPrevBarWasClimax, lastEntryBarIsExhaustion, lastEntryClimaxScore, lastEntryExhaustionScore,
@@ -2609,10 +2605,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             Print(string.Format("     [DELTA-VELOCITY] ROC: {0:F1} | Accel: {1:F1} | Score: {2:F2} | Momentum: {3} | FilterEnabled: {4} | Pass: {5}",
                 lastEntryDeltaROC, lastEntryDeltaAccel, lastEntryDeltaVelocityScore, lastEntryDeltaMomentum, UseDeltaVelocityFilter, lastEntryPassDeltaVelocityFilter));
-
-            Print(string.Format("     [MOMENTUM-CTX] AccelSellOverheadBlock: Enabled={0} | Pass={1} | DeltaMomentum={2} | Context={3}",
-                UseAccelSellOverheadBlock, lastEntryAccelSellOverheadBlockPass, lastEntryDeltaMomentum, lastEntryContext));
-            Print(string.Format("     [ACCEL-SELL-SHB] BlockEnabled: {0} | Pass: {1}", UseAccelSellSHBBlock, lastEntryAccelSellSHBBlockPass));
 
             Print(string.Format("     [CD-ACCEL] Accel: {0:F1}% | OldSlope: {1:F1}% | Pass: {2}",
                 lastEntrySlopeAccel, lastEntryOlderSlope, lastEntryPassCdAccel));
@@ -2625,7 +2617,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             Print(string.Format("     [POC-MIG] Cur: {0:F2} | Prev1: {1:F2} | Prev2: {2:F2} | MigTicks: {3:F1} | RevUp: {4} | Pass: {5}",
                 lastEntryCurrentPoc, lastEntryPrevPoc1, lastEntryPrevPoc2, lastEntryPocMig1, lastEntryRevUp, lastEntryPassPocMig));
-            Print(string.Format("     [POC-MIG-GATE] GateEnabled: {0} | Pass: {1}", UsePocMigrationGate, lastEntryPocMigGatePass));
 
             Print(string.Format("     [AVWAP-DECISION] ActiveAnchor: {0} | Tier: {1} | Slope: {2} (Drop: {3:F1}T) | SignalDistBelow(C1): {4:F1}T | Reclaimed: {5}",
                 string.IsNullOrEmpty(lastEntryAvwapActiveAnchor) ? "N/A" : lastEntryAvwapActiveAnchor,
@@ -3402,21 +3393,15 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 double barRegimeSessPos = GetSessionPosition(Close[1]);
                 string barRegimeContext = GetSessionContextString(GetStackContext(barRegimeSessPos));
-                Print(string.Format("[BAR-REGIME] Time={0:yyyy-MM-dd HH:mm:ss} | R1k={1:F1} | VolZ={2:F2} | BarVol={3:F0} | Range={4:F1}T | Secs={5:F2} | Delta={6:F0} | NormDelta={7:F1}% | SessPos={8:F2} | Context={9} | Momentum={10} | Roll20R1k={11:F1} | Regime={12}",
+                Print(string.Format("[BAR-REGIME] Time={0:yyyy-MM-dd HH:mm:ss} | R1k={1:F1} | VolZ={2:F2} | BarVol={3:F0} | Range={4:F1}T | Secs={5:F2} | Delta={6:F0} | NormDelta={7:F1}% | SessPos={8:F2} | Context={9} | Momentum={10} | RollR1k={11:F1} | Regime={12}",
                     Time[1], rangePer1kVolumeTicks, volZScore, totalBarVol, signalBarRangeTicks, signalBarSecs,
                     barDelta, normDeltaPct, barRegimeSessPos, barRegimeContext, GetDeltaMomentumString(currentDeltaMomentum),
-                    rollingR1k20, GetMicroRegimeString(currentMicroRegime)));
+                    rollingR1k, GetMicroRegimeString(currentMicroRegime)));
             }
             #endregion
 
             #region Tier A Long Validation
             bool s3_long_valid = false;
-            double entrySpread = 0;
-            bool spreadGatePass = true;
-            bool accelSellOverheadPass = true;
-            bool pocMigGatePass = true;
-            bool accelSellSHBPass = true;
-            bool pocPosGatePass = true;
 
             if (S3_Enable && maxBullishStack >= S3_MinStackSize && maxBullishStack <= S3_MaxStackSize)
             {
@@ -3513,18 +3498,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                     }
                 }
 
-                // POC MIGRATION GATE (global, context-aware)
-                if (UsePocMigrationGate)
-                {
-                    double migTicks = pMig1 / TickSize;
-                    bool isExempt = PocMigGateExemptUpperCont && stackContextEnum == SessionContext.UpperCont;
-                    if (!isExempt && migTicks < PocMigGateMinTicks)
-                    {
-                        pocMigGatePass = false;
-                        s3_long_valid = false;
-                    }
-                }
-
                 // AVWAP 4-TIER ENGINE
                 if (UseAvwapFilter)
                 {
@@ -3594,13 +3567,18 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (!IsMicroRegimeAllowed())
                 {
                     if (UseTradeLogging)
-                        Print(string.Format("[REGIME-BLOCK] Regime={0} | Roll20R1k={1:F1} | Signal skipped",
-                            GetMicroRegimeString(currentMicroRegime), rollingR1k20));
+                        Print(string.Format("[REGIME-BLOCK] Regime={0} | RollR1k={1:F1} | Signal skipped",
+                            GetMicroRegimeString(currentMicroRegime), rollingR1k));
                     s3_long_valid = false;
                 }
 
                 // SESSION CONTEXT FILTER
                 if (UseSessionContextFilter && !IsSessionContextAllowed(stackContextEnum))
+                    s3_long_valid = false;
+
+                // ADAPTIVE 40 RANGE FILTER (C3)
+                bool adaptive40RangePass = EvaluateAdaptive40RangeFilter(stackContextEnum, currentDeltaMomentum, cAdvLong);
+                if (!adaptive40RangePass)
                     s3_long_valid = false;
 
                 // SIGNAL QUALITY: Min Bar Duration
@@ -3613,47 +3591,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (!passMaxEscapeGlobal)
                     s3_long_valid = false;
 
-                // SPREAD SAFETY GATE
-                {
-                    double gateBid = GetCurrentBid();
-                    double gateAsk = GetCurrentAsk();
-                    if (gateBid > 0 && gateAsk > 0)
-                        entrySpread = (gateAsk - gateBid) / TickSize;
-                }
-                spreadGatePass = !UseSpreadGate || entrySpread <= MaxEntrySpreadTicks;
-                if (!spreadGatePass)
-                    s3_long_valid = false;
-
-                // MOMENTUM CONTEXT BLOCK: AccelSell + Overhead
-                if (UseAccelSellOverheadBlock && currentDeltaMomentum == DeltaMomentum.AccelSell)
-                {
-                    if (stackContextEnum == SessionContext.UpperCont || stackContextEnum == SessionContext.SessionHighBo || stackContextEnum == SessionContext.MidRange)
-                    {
-                        accelSellOverheadPass = false;
-                        s3_long_valid = false;
-                    }
-                }
-
-                // ACCEL-SELL SESS-HIGH-BO BLOCK
-                if (UseAccelSellSHBBlock && stackContextEnum == SessionContext.SessionHighBo)
-                {
-                    if (currentDeltaMomentum == DeltaMomentum.AccelSell)
-                    {
-                        accelSellSHBPass = false;
-                        s3_long_valid = false;
-                    }
-                }
-
-                // POC POSITION GATE (context-aware)
-                if (UsePocPosGate)
-                {
-                    bool contextApplies = !PocPosGateSHBOnly || stackContextEnum == SessionContext.SessionHighBo;
-                    if (contextApplies && pocPosition >= PocPosGateMaxValue)
-                    {
-                        pocPosGatePass = false;
-                        s3_long_valid = false;
-                    }
-                }
                 // ─────────────────────────────────────────────────────────────────────────────
 
                 // 1. Capture the exact state of the global filters BEFORE the matrix touches it
@@ -3788,14 +3725,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                         case AdaptiveContextFamily.CeilingBreakout:
                         {
-                            // CEILING-BO ABOVE-VAH BLOCK
-                            if (UseCeilingAboveVAHBlock && vaContext == ValueAreaContext.AboveVAH)
-                            {
-                                matrixVerdict = false;
-                                if (string.IsNullOrEmpty(matrixBlockReason))
-                                    matrixBlockReason = "Ceiling: blocked ABOVE-VAH entry (UseCeilingAboveVAHBlock)";
-                            }
-
                             bool isLargeConstVol = constantVolumeBarMode && totalBarVol >= 1400;
                             bool ceilingIntensityPass = (domVolLongPercent >= adaptiveProfile.MinDomVol) || (validBullishRatio >= adaptiveProfile.MinRatio);
                             if (!ceilingIntensityPass)
@@ -4218,18 +4147,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                     lastEntryVolRegimeGateAllowed = volRegimeGateAllowed;
 
                     // Microstructure regime telemetry
-                    lastEntryRollingR1k20 = rollingR1k20;
+                    lastEntryRollingR1k = rollingR1k;
                     lastEntryMicroRegime = GetMicroRegimeString(currentMicroRegime);
 
                     // Session context & signal quality gate telemetry
                     lastEntrySessionContextGateAllowed = IsSessionContextAllowed(stackContextEnum);
                     lastEntryMinSecsPass = passMinBarSecs;
                     lastEntryMaxEscapeGlobalPass = passMaxEscapeGlobal;
-                    lastEntrySpreadGatePass = spreadGatePass;
-                    lastEntryAccelSellOverheadBlockPass = accelSellOverheadPass;
-                    lastEntryPocMigGatePass = pocMigGatePass;
-                    lastEntryAccelSellSHBBlockPass = accelSellSHBPass;
-                    lastEntryPocPosGatePass = pocPosGatePass;
+                    lastEntryAdaptive40RangeFilterPass = adaptive40RangePass;
 
                     lastEntryBarIsClimax = isClimax;
                     lastEntryBarIsExhaustion = isExhaustion;
@@ -4282,7 +4207,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                     lastEntryDisableBarVolumeFilters = disableBarVolumeDependentFilters;
                     lastEntrySessionAxis = sessionBucketStr;
                     lastEntrySpatialPair = spatialPairStr;
-                    lastEntryCeilingAboveVAHBlocked = (UseCeilingAboveVAHBlock && adaptiveContextFamily == AdaptiveContextFamily.CeilingBreakout && vaContext == ValueAreaContext.AboveVAH);
 
                     lastEntrySignalPrice = Close[1];
                     lastEntrySessionHigh = sessionHigh;
@@ -4501,30 +4425,30 @@ namespace NinjaTrader.NinjaScript.Strategies
         public bool AllowInfiniteEdgeRatio { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Use Opposing Dominance Abort", Order = 1, GroupName = "03. KILL SWITCHES & LOGIC")]
+        [Display(Name = "Use Opposing Dominance Abort", Order = 7, GroupName = "02. GLOBAL: Imbalance Core")]
         public bool UseOpposingDominanceAbort { get; set; }
 
         [NinjaScriptProperty]
         [Range(1.0, 1000.0)]
-        [Display(Name = "Opposing Abort Live Delta Limit", Order = 2, GroupName = "03. KILL SWITCHES & LOGIC")]
+        [Display(Name = "Opposing Abort Live Delta Limit", Order = 8, GroupName = "02. GLOBAL: Imbalance Core")]
         public double OpposingAbortDeltaLimit { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Use Absorption Wall Abort", Order = 3, GroupName = "03. KILL SWITCHES & LOGIC")]
+        [Display(Name = "Use Absorption Wall Abort", Order = 9, GroupName = "02. GLOBAL: Imbalance Core")]
         public bool UseAbsorptionWallAbort { get; set; }
 
         [NinjaScriptProperty]
         [Range(10, 1000)]
-        [Display(Name = "Absorption Abort Volume", Order = 4, GroupName = "03. KILL SWITCHES & LOGIC")]
+        [Display(Name = "Absorption Abort Volume", Order = 10, GroupName = "02. GLOBAL: Imbalance Core")]
         public int AbsorptionAbortVolume { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 100)]
-        [Display(Name = "Global Divergence Lookback (Bars)", Order = 5, GroupName = "03. KILL SWITCHES & LOGIC")]
+        [Display(Name = "Global Divergence Lookback (Bars)", Order = 11, GroupName = "02. GLOBAL: Imbalance Core")]
         public int GlobalDivLookback { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Reset Adaptive Buffers Daily", Order = 6, GroupName = "03. KILL SWITCHES & LOGIC")]
+        [Display(Name = "Reset Adaptive Buffers Daily", Order = 12, GroupName = "02. GLOBAL: Imbalance Core")]
         public bool ResetAdaptiveOnDayTransition { get; set; }
 
         // ==============================================================================
@@ -4576,6 +4500,25 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "Require Exhaustion Setup", Order = 5, GroupName = "03c. CLIMAX/EXHAUSTION FILTER")]
         public bool RequireExhaustionSetup { get; set; }
+
+        // ==============================================================================
+        // 03c-2: ADAPTIVE 40 RANGE FILTER
+        // ==============================================================================
+        [NinjaScriptProperty]
+        [Display(Name = "01. Use Adaptive 40 Range Filter", Order = 1, GroupName = "03c-2. ADAPTIVE 40 RANGE")]
+        public bool UseAdaptive40RangeFilter { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "02. Block LOWER-CONT + ACCEL-BUY", Order = 2, GroupName = "03c-2. ADAPTIVE 40 RANGE")]
+        public bool Block_LowerCont_AccelBuy { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "03. Block MID-RANGE + ACCEL-BUY", Order = 3, GroupName = "03c-2. ADAPTIVE 40 RANGE")]
+        public bool Block_MidRange_AccelBuy { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "04. Block NIC = 1", Order = 4, GroupName = "03c-2. ADAPTIVE 40 RANGE")]
+        public bool Block_NIC1 { get; set; }
 
         // ==============================================================================
         // 03d: VALUE AREA FILTER
@@ -4725,6 +4668,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Allow Thin Regime", Order = 7, GroupName = "03g. MICROSTRUCTURE REGIME FILTER")]
         public bool AllowThinRegime { get; set; }
 
+        [NinjaScriptProperty]
+        [Display(Name = "Allow Warmup Regime", Order = 8, GroupName = "03g. MICROSTRUCTURE REGIME FILTER")]
+        public bool AllowWarmupRegime { get; set; }
+
         // ==============================================================================
         // 03h: ANCHORED VWAP FILTER (4-Tier Engine)
         // ==============================================================================
@@ -4816,13 +4763,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Range(0.0, 200.0)]
         [Display(Name = "04. Max Escape Ticks Global", Order = 4, GroupName = "03l. SIGNAL BAR QUALITY")]
         public double MaxEscapeGlobalTicks { get; set; }
-
-        // ==============================================================================
-        // 03m: CEILING-BO VA FILTER
-        // ==============================================================================
-        [NinjaScriptProperty]
-        [Display(Name = "01. Block CEILING-BO Above VAH", Order = 1, GroupName = "03m. CEILING-BO VA FILTER")]
-        public bool UseCeilingAboveVAHBlock { get; set; }
 
         // ==============================================================================
         // 03j: ADAPTIVE CONTEXT MATRIX
@@ -5367,48 +5307,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Midday End", Order = 15, GroupName = "08. KEY LEVELS")]
         public DateTime KL_MiddayEnd { get; set; }
 
-        [NinjaScriptProperty]
-        [Display(Name = "01. Use Spread Safety Gate", Order = 1, GroupName = "03n. SPREAD SAFETY GATE")]
-        public bool UseSpreadGate { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(1.0, 50.0)]
-        [Display(Name = "02. Max Entry Spread (Ticks)", Order = 2, GroupName = "03n. SPREAD SAFETY GATE")]
-        public double MaxEntrySpreadTicks { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "01. Use AccelSell Overhead Block", Order = 1, GroupName = "03o. MOMENTUM CONTEXT BLOCK")]
-        public bool UseAccelSellOverheadBlock { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "01. Use POC Migration Gate", Order = 1, GroupName = "03p. POC MIGRATION GATE")]
-        public bool UsePocMigrationGate { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(0.0, 50.0)]
-        [Display(Name = "02. Min Migration Ticks", Order = 2, GroupName = "03p. POC MIGRATION GATE")]
-        public double PocMigGateMinTicks { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "03. Exempt UPPER-CONT", Order = 3, GroupName = "03p. POC MIGRATION GATE")]
-        public bool PocMigGateExemptUpperCont { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "01. Block ACCEL-SELL in SESS-HIGH-BO", Order = 1, GroupName = "03q. ACCEL-SELL SHB BLOCK")]
-        public bool UseAccelSellSHBBlock { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "01. Use POCPos Gate", Order = 1, GroupName = "03r. POC POSITION GATE")]
-        public bool UsePocPosGate { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(0.0, 1.0)]
-        [Display(Name = "02. Max POCPos (block above)", Order = 2, GroupName = "03r. POC POSITION GATE")]
-        public double PocPosGateMaxValue { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "03. Apply Only in SESS-HIGH-BO", Order = 3, GroupName = "03r. POC POSITION GATE")]
-        public bool PocPosGateSHBOnly { get; set; }
         #endregion
     }
 }
