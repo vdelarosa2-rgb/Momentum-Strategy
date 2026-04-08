@@ -482,7 +482,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double lastEntryClimaxCurVol = 0;
         private bool lastEntryPassClimaxFilter = true;
         private bool lastEntryPassExhaustionFilter = true;
-        private bool lastEntryPassGreenEscapeFilter = true;
         #endregion
 
         #region Value Area Tracking (NYSE Session)
@@ -546,7 +545,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (State == State.SetDefaults)
             {
-                Description = "Institutional Imbalance Engine v2.52 (Per-Bar Regime Telemetry | Rolling Window Calibration Data)";
+                Description = "Institutional Imbalance Engine v2.53 (Tier 1 Revert)";
                 Name = "MomentumSubsetEnhanced";
                 Calculate = Calculate.OnPriceChange;
                 EntriesPerDirection = 1;
@@ -2382,7 +2381,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (!UseTradeLogging) return;
 
             Print("=========================================================================");
-            Print("SETTINGS LOG | MomentumSubsetEnhanced v2.52 (Per-Bar Regime Telemetry | Rolling Window Calibration Data)");
+            Print("SETTINGS LOG | MomentumSubsetEnhanced v2.53 (Tier 1 Revert)");
             Print("=========================================================================");
 
             Print(string.Format("[00]  DIRECTION      : Long={0}", AllowLongTrades));
@@ -2596,9 +2595,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print(string.Format("     [CLIMAX-EXHAUST] IsClimax: {0} | PrevClimax: {1} | IsExhaust: {2} | ClimaxScore: {3:F2} | ExhaustScore: {4:F2} | PrevVol: {5:F0} | CurVol: {6:F0} | PassClimax: {7} | PassExhaust: {8}",
                 lastEntryBarIsClimax, lastEntryPrevBarWasClimax, lastEntryBarIsExhaustion, lastEntryClimaxScore, lastEntryExhaustionScore,
                 lastEntryClimaxPrevVol, lastEntryClimaxCurVol, lastEntryPassClimaxFilter, lastEntryPassExhaustionFilter));
-
-            Print(string.Format("     [GREEN-ESCAPE] Dir: {0} | EscapeTicks: {1:F1} | PassGreenEscapeFilter: {2}",
-                lastEntryBarDir, lastEntryEscapeTicks, lastEntryPassGreenEscapeFilter));
 
             Print(string.Format("     [VALUE-AREA] VAH: {0:F2} | VAL: {1:F2} | POC: {2:F2} | Context: {3} | DistToPOC: {4:F1}T | FilterEnabled: {5} | Pass: {6}",
                 lastEntryVAH, lastEntryVAL, lastEntrySessionPOCVA, lastEntryVAContext, lastEntryPriceDistToPOC, UseValueAreaFilter, lastEntryPassVAFilter));
@@ -3579,10 +3575,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (!passMaxEscapeGlobal)
                     s3_long_valid = false;
 
-                // GLOBAL PRE-FILTER: Block green bars with no escape (imbalance consumed within bar)
-                if (barDir == "GREEN" && escapeLongTicks <= 0)
-                    s3_long_valid = false;
-
                 // ─────────────────────────────────────────────────────────────────────────────
 
                 // 1. Capture the exact state of the global filters BEFORE the matrix touches it
@@ -3769,24 +3761,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                                     matrixBlockReason = "Ceiling: weak negative-delta breakout structure";
                             }
 
-                            bool ceilingDecelBuyPass = !(currentDeltaMomentum == DeltaMomentum.DecelBuy);
-                            if (!ceilingDecelBuyPass)
-                            {
-                                matrixVerdict = false;
-                                if (string.IsNullOrEmpty(matrixBlockReason))
-                                    matrixBlockReason = "Ceiling: DECEL-BUY momentum kill switch";
-                            }
-
-                            bool ceilingRedBarPass = !(barDir == "RED");
-                            if (!ceilingRedBarPass)
-                            {
-                                matrixVerdict = false;
-                                if (string.IsNullOrEmpty(matrixBlockReason))
-                                    matrixBlockReason = "Ceiling: RED bar direction kill switch";
-                            }
-
-                            matrixProofState = string.Format("IntensityPass={0} (Dom>={1:F1} OR Ratio>={2:F1}) | TrapPass={3} | SlopePass={4} | AntiChasePass={5} (D/V={6:F1}% | DomVol={7:F1}% | Secs={8:F1}) | WeakFailPass={9} | ActiveSlopeDrop={10:F1}T | DecelBuyPass={11} | RedBarPass={12}",
-                                ceilingIntensityPass, adaptiveProfile.MinDomVol, adaptiveProfile.MinRatio, ceilingTrapPass, ceilingSlopePass, ceilingAntiChasePass, deltaPctOfVolume, domVolLongPercent, signalBarSecs, ceilingWeakFailurePass, activeAvwapSlopeDownTicks, ceilingDecelBuyPass, ceilingRedBarPass);
+                            matrixProofState = string.Format("IntensityPass={0} (Dom>={1:F1} OR Ratio>={2:F1}) | TrapPass={3} | SlopePass={4} | AntiChasePass={5} (D/V={6:F1}% | DomVol={7:F1}% | Secs={8:F1}) | WeakFailPass={9} | ActiveSlopeDrop={10:F1}T",
+                                ceilingIntensityPass, adaptiveProfile.MinDomVol, adaptiveProfile.MinRatio, ceilingTrapPass, ceilingSlopePass, ceilingAntiChasePass, deltaPctOfVolume, domVolLongPercent, signalBarSecs, ceilingWeakFailurePass, activeAvwapSlopeDownTicks);
                             break;
                         }
 
@@ -3918,21 +3894,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                                 matrixBlockReason = "PASS";
                             }
 
-                            bool upperFrictionExhaustBoost = isExhaustion && signalBarSecs < 25.0;
-                            bool upperFrictionSlowBoost = !isExhaustion && signalBarSecs >= 25.0 && signalBarSecs <= 90.0;
-                            if (upperFrictionExhaustBoost)
-                            {
-                                matrixVerdict = true;
-                                matrixBlockReason = "PASS (UpperFriction: exhaustion + fast bar boost)";
-                            }
-                            else if (upperFrictionSlowBoost)
-                            {
-                                matrixVerdict = true;
-                                matrixBlockReason = "PASS (UpperFriction: non-exhaustion normal-pace boost)";
-                            }
-
-                            matrixProofState = string.Format("DomPass={0} (Need>={1:F1}) | RatioPass={2} (Need>={3:F1}) | Reclaim={4} | TrapPass={5} | ImprovingRoute={6} | SlowPullbackRoute={7} (Secs={8:F1} | Escape={9:F1} | D/V={10:F1}%) | Cal1500Route={11} | ExhaustBoost={12} | SlowBoost={13}",
-                                domPass, effectiveDomMin, ratioPass, effectiveRatioMin, reclaimPass, trapPass, improvingRoutePass, slowPullbackRoutePass, signalBarSecs, escapeLongTicks, deltaPctOfVolume, calibrated1500RoutePass, upperFrictionExhaustBoost, upperFrictionSlowBoost);
+                            matrixProofState = string.Format("DomPass={0} (Need>={1:F1}) | RatioPass={2} (Need>={3:F1}) | Reclaim={4} | TrapPass={5} | ImprovingRoute={6} | SlowPullbackRoute={7} (Secs={8:F1} | Escape={9:F1} | D/V={10:F1}%) | Cal1500Route={11}",
+                                domPass, effectiveDomMin, ratioPass, effectiveRatioMin, reclaimPass, trapPass, improvingRoutePass, slowPullbackRoutePass, signalBarSecs, escapeLongTicks, deltaPctOfVolume, calibrated1500RoutePass);
                             break;
                         }
 
@@ -4186,7 +4149,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                     lastEntryClimaxCurVol = totalBarVol;
                     lastEntryPassClimaxFilter = passClimaxFilter;
                     lastEntryPassExhaustionFilter = !UseExhaustionFilter || isExhaustion || !RequireExhaustionSetup;
-                    lastEntryPassGreenEscapeFilter = !(barDir == "GREEN" && escapeLongTicks <= 0);
 
                     lastEntryVAH = nyseSessionVAH;
                     lastEntryVAL = nyseSessionVAL;
