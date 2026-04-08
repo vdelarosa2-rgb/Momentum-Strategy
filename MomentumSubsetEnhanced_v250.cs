@@ -3575,6 +3575,19 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (!passMaxEscapeGlobal)
                     s3_long_valid = false;
 
+                // ── WIRED FILTER GATES (previously computed but not applied) ──────────────
+                // CLIMAX/EXHAUSTION FILTER
+                if (!passClimaxFilter)
+                    s3_long_valid = false;
+
+                // VALUE AREA FILTER
+                if (!passVAFilter)
+                    s3_long_valid = false;
+
+                // DELTA VELOCITY FILTER
+                if (!passDeltaVelocityFilter)
+                    s3_long_valid = false;
+
                 // ─────────────────────────────────────────────────────────────────────────────
 
                 // 1. Capture the exact state of the global filters BEFORE the matrix touches it
