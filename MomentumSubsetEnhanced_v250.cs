@@ -3919,14 +3919,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                             }
 
                             bool upperFrictionExhaustBoost = isExhaustion && signalBarSecs < 25.0;
+                            bool upperFrictionSlowBoost = !isExhaustion && signalBarSecs >= 25.0 && signalBarSecs <= 90.0;
                             if (upperFrictionExhaustBoost)
                             {
                                 matrixVerdict = true;
                                 matrixBlockReason = "PASS (UpperFriction: exhaustion + fast bar boost)";
                             }
-
-                            bool upperFrictionSlowBoost = !isExhaustion && signalBarSecs >= 25.0 && signalBarSecs <= 90.0;
-                            if (upperFrictionSlowBoost)
+                            else if (upperFrictionSlowBoost)
                             {
                                 matrixVerdict = true;
                                 matrixBlockReason = "PASS (UpperFriction: non-exhaustion normal-pace boost)";
