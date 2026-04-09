@@ -106,7 +106,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         MidRangeChop,
         UpperValueFriction,
         CeilingBreakout,
-        LocationConflict
+        LocationConflict,
+        // Short-side families
+        CeilingValueReject,
+        AboveValueReversal,
+        WithGrainShortContinuation,
+        LowerValueFriction,
+        BasementBreakdown
     }
 
     public enum MicrostructureRegime
@@ -189,6 +195,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private bool breakEvenTriggered = false;
         private double highestSeenPrice = 0;
+        private double lowestSeenPrice = 0;
         private double currentStopPrice = 0;
         private int lastTrailStep = -1;
 
@@ -252,6 +259,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             public int Size;
         }
         private List<StackInfo> recentBullStacks = new List<StackInfo>();
+        private List<StackInfo> recentBearStacks = new List<StackInfo>();
         private int maxStackMemory = 10;
 
         // Daily Summary Stats
@@ -564,6 +572,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 BarsRequiredToTrade = 40;
 
                 AllowLongTrades = true;
+                AllowShortTrades = false;
 
                 AllowBullDiv = true;
                 AllowBearDiv = true;
@@ -913,6 +922,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             breakEvenTriggered = false;
             highestSeenPrice = 0;
+            lowestSeenPrice = 0;
             currentStopPrice = 0;
             lastTrailStep = -1;
         }
@@ -932,6 +942,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (recentBullStacks != null)
                 recentBullStacks.Clear();
+
+            if (recentBearStacks != null)
+                recentBearStacks.Clear();
 
             prevPoc1 = 0.0;
             prevPoc2 = 0.0;
@@ -1435,8 +1448,76 @@ namespace NinjaTrader.NinjaScript.Strategies
                 case AdaptiveContextFamily.UpperValueFriction: return "UPPER-FRICTION";
                 case AdaptiveContextFamily.CeilingBreakout: return "CEILING-BO";
                 case AdaptiveContextFamily.LocationConflict: return "LOCATION-CONFLICT";
+                case AdaptiveContextFamily.CeilingValueReject: return "CEILING-REJECT";
+                case AdaptiveContextFamily.AboveValueReversal: return "ABOVE-VAH-REV";
+                case AdaptiveContextFamily.WithGrainShortContinuation: return "SHORT-CONT";
+                case AdaptiveContextFamily.LowerValueFriction: return "LOWER-FRICTION";
+                case AdaptiveContextFamily.BasementBreakdown: return "BASEMENT-BREAK";
                 default: return "UNKNOWN";
             }
+        }
+
+        private AdaptiveContextFamily GetAdaptiveContextFamilyShort(SessionLocationBucket sessionBucket, ValueAreaContext vaContext)
+        {
+            // Short-side: selling rallies/breakdowns
+            if (sessionBucket == SessionLocationBucket.Ceiling || sessionBucket == SessionLocationBucket.Upper)
+            {
+                if (vaContext == ValueAreaContext.AboveVAH || vaContext == ValueAreaContext.AtVAH)
+                    return AdaptiveContextFamily.CeilingValueReject;
+                if (vaContext == ValueAreaContext.InValue || vaContext == ValueAreaContext.AtPOC)
+                    return AdaptiveContextFamily.LowerValueFriction;
+            }
+
+            if (vaContext == ValueAreaContext.BelowVAL || vaContext == ValueAreaContext.AtVAL)
+            {
+                if (sessionBucket == SessionLocationBucket.Upper || sessionBucket == SessionLocationBucket.Mid)
+                    return AdaptiveContextFamily.AboveValueReversal;
+            }
+
+            if (sessionBucket == SessionLocationBucket.Mid && (vaContext == ValueAreaContext.InValue || vaContext == ValueAreaContext.AtPOC))
+                return AdaptiveContextFamily.WithGrainShortContinuation;
+
+            if (sessionBucket == SessionLocationBucket.Lower || sessionBucket == SessionLocationBucket.Basement)
+            {
+                if (vaContext == ValueAreaContext.InValue || vaContext == ValueAreaContext.AtPOC || vaContext == ValueAreaContext.BelowVAL)
+                    return AdaptiveContextFamily.LowerValueFriction;
+                if (vaContext == ValueAreaContext.AboveVAH || vaContext == ValueAreaContext.AtVAH)
+                    return AdaptiveContextFamily.BasementBreakdown;
+            }
+
+            if (sessionBucket == SessionLocationBucket.Ceiling && (vaContext == ValueAreaContext.AboveVAH || vaContext == ValueAreaContext.AtVAH))
+                return AdaptiveContextFamily.CeilingValueReject;
+
+            return AdaptiveContextFamily.Unknown;
+        }
+
+        private AdaptiveRuleProfile GetAdaptiveRuleProfileShort(AdaptiveContextFamily family, bool disableBarVolumeDependentFilters)
+        {
+            // Map short-side families to their long-side counterparts for profile lookup
+            // The user will calibrate these separately via backtesting
+            AdaptiveContextFamily mappedFamily;
+            switch (family)
+            {
+                case AdaptiveContextFamily.CeilingValueReject:
+                    mappedFamily = AdaptiveContextFamily.BasementValueReclaim;
+                    break;
+                case AdaptiveContextFamily.AboveValueReversal:
+                    mappedFamily = AdaptiveContextFamily.BelowValueReversal;
+                    break;
+                case AdaptiveContextFamily.WithGrainShortContinuation:
+                    mappedFamily = AdaptiveContextFamily.WithGrainContinuation;
+                    break;
+                case AdaptiveContextFamily.LowerValueFriction:
+                    mappedFamily = AdaptiveContextFamily.UpperValueFriction;
+                    break;
+                case AdaptiveContextFamily.BasementBreakdown:
+                    mappedFamily = AdaptiveContextFamily.CeilingBreakout;
+                    break;
+                default:
+                    mappedFamily = family;
+                    break;
+            }
+            return GetAdaptiveRuleProfile(mappedFamily, disableBarVolumeDependentFilters);
         }
 
         private AdaptiveRuleProfile GetAdaptiveRuleProfile(AdaptiveContextFamily family, bool disableBarVolumeDependentFilters)
@@ -1583,6 +1664,20 @@ namespace NinjaTrader.NinjaScript.Strategies
             double barRange = barHighTick - barLowTick;
             double recency = 1.0 - (distanceFromHigh / barRange);
             
+            if (recency < 0) return 0;
+            if (recency > 1.0) return 1.0;
+            return recency;
+        }
+
+        private double CalculateStackRecencyShort(int stackTopTick, int stackSize, int barHighTick, int barLowTick)
+        {
+            if (barHighTick <= barLowTick) return DefaultStackRecency;
+
+            double stackMidTick = stackTopTick - ((stackSize - 1.0) / 2.0);
+            double distanceFromLow = stackMidTick - barLowTick;
+            double barRange = barHighTick - barLowTick;
+            double recency = 1.0 - (distanceFromLow / barRange);
+
             if (recency < 0) return 0;
             if (recency > 1.0) return 1.0;
             return recency;
@@ -2296,6 +2391,31 @@ namespace NinjaTrader.NinjaScript.Strategies
             recentBullStacks.RemoveAll(s => CurrentBar - s.BarIndex > maxStackMemory);
         }
 
+        private void PruneRecentBearStacks()
+        {
+            if (recentBearStacks == null || recentBearStacks.Count == 0)
+                return;
+
+            recentBearStacks.RemoveAll(s => CurrentBar - s.BarIndex > maxStackMemory);
+        }
+
+        private bool CanSubmitShortEntry(DateTime currentTime)
+        {
+            if (Position.MarketPosition != MarketPosition.Flat)
+                return false;
+
+            if (dailyProfitHit)
+                return false;
+
+            if (!IsWithinActiveSession(currentTime))
+                return false;
+
+            if (!CooldownWindowComplete(currentTime))
+                return false;
+
+            return true;
+        }
+
         private bool TryUpdateDynamicStopLong(double desiredStopPrice)
         {
             if (Position.MarketPosition != MarketPosition.Long)
@@ -2316,6 +2436,33 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return false;
 
             if (roundedDesired >= maxValidStop)
+                return false;
+
+            currentStopPrice = roundedDesired;
+            SetStopLoss(CalculationMode.Price, currentStopPrice);
+            return true;
+        }
+
+        private bool TryUpdateDynamicStopShort(double desiredStopPrice)
+        {
+            if (Position.MarketPosition != MarketPosition.Short)
+                return false;
+
+            double roundedDesired = Instrument.MasterInstrument.RoundToTickSize(desiredStopPrice);
+
+            double currentPrice = Close[0];
+            if (State == State.Realtime)
+            {
+                double ask = GetCurrentAsk();
+                if (ask > 0) currentPrice = ask;
+            }
+
+            double minValidStop = Instrument.MasterInstrument.RoundToTickSize(currentPrice + (SpreadCushionTicks * TickSize));
+
+            if (roundedDesired >= currentStopPrice)
+                return false;
+
+            if (roundedDesired <= minValidStop)
                 return false;
 
             currentStopPrice = roundedDesired;
@@ -2412,7 +2559,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print("SETTINGS LOG | MomentumSubsetEnhanced v2.53 (Tier 1 Revert)");
             Print("=========================================================================");
 
-            Print(string.Format("[00]  DIRECTION      : Long={0}", AllowLongTrades));
+            Print(string.Format("[00]  DIRECTION      : Long={0} | Short={1}", AllowLongTrades, AllowShortTrades));
             Print(string.Format("[00b] REGIMES        : BullDiv={0} | BearDiv={1} | BullConv={2} | BearConv={3}", AllowBullDiv, AllowBearDiv, AllowBullConv, AllowBearConv));
             Print(string.Format("[01]  COOLDOWN       : Use={0} | Minutes={1}", UseCooldown, CooldownMinutes));
             Print(string.Format("[02]  IMBALANCE CORE : Ratio={0:F1} to {1:F1} | MinImbVol={2} | AllowInfEdge={3}", ImbalanceRatio, MaxImbalanceRatio, MinImbalanceVolume, AllowInfiniteEdgeRatio));
@@ -2715,6 +2862,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 highestSeenPrice = averagePrice;
                 currentStopPrice = averagePrice - (StopLossTicks * TickSize);
             }
+            else if (marketPosition == MarketPosition.Short)
+            {
+                lowestSeenPrice = averagePrice;
+                currentStopPrice = averagePrice + (StopLossTicks * TickSize);
+            }
         }
 
         protected override void OnMarketData(MarketDataEventArgs marketDataUpdate)
@@ -2797,7 +2949,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 if (!IsWithinActiveSession(Time[0]))
                 {
-                    ExitLong("Exit-Session", "");
+                    if (Position.MarketPosition == MarketPosition.Long)
+                        ExitLong("Exit-Session", "");
+                    else if (Position.MarketPosition == MarketPosition.Short)
+                        ExitShort("Exit-Session", "");
                     return;
                 }
             }
@@ -2819,6 +2974,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                     if (Position.MarketPosition == MarketPosition.Long)
                     {
                         ExitLong("Exit-DailyMax", "");
+                        return;
+                    }
+                    else if (Position.MarketPosition == MarketPosition.Short)
+                    {
+                        ExitShort("Exit-DailyMax", "");
                         return;
                     }
                 }
@@ -2878,6 +3038,48 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                             if (UseTradeLogging)
                                 Print(string.Format("{0} | TRAIL STEP {1} | MFE: {2:F1}T | Stop moved to: {3}",
+                                    Time[0].ToString("HH:mm:ss"), steps, mfeTicks, currentStopPrice));
+                        }
+                    }
+                }
+            }
+            else if (Position.MarketPosition == MarketPosition.Short && !dailyProfitHit)
+            {
+                if (Low[0] < lowestSeenPrice)
+                    lowestSeenPrice = Low[0];
+
+                double mfeTicks = (Position.AveragePrice - lowestSeenPrice) / TickSize;
+
+                // Break-Even Logic
+                if (UseBreakEven && !breakEvenTriggered && mfeTicks >= BreakEvenTriggerTicks)
+                {
+                    double bePrice = Position.AveragePrice - (BreakEvenOffsetTicks * TickSize);
+
+                    if (TryUpdateDynamicStopShort(bePrice))
+                    {
+                        breakEvenTriggered = true;
+
+                        if (UseTradeLogging)
+                            Print(string.Format("{0} | BE TRIGGERED (SHORT) | MFE: {1:F1}T | Stop moved to: {2}",
+                                Time[0].ToString("HH:mm:ss"), mfeTicks, currentStopPrice));
+                    }
+                }
+
+                // Trailing Stop Logic
+                if (UseAutoTrail && mfeTicks >= AutoTrailTriggerTicks)
+                {
+                    int steps = (int)Math.Floor((mfeTicks - AutoTrailTriggerTicks) / AutoTrailFrequencyTicks);
+                    if (steps > lastTrailStep)
+                    {
+                        double activeMfeLevelTicks = AutoTrailTriggerTicks + (steps * AutoTrailFrequencyTicks);
+                        double newStopPrice = Position.AveragePrice - ((activeMfeLevelTicks - AutoTrailStopLossTicks) * TickSize);
+
+                        if (TryUpdateDynamicStopShort(newStopPrice))
+                        {
+                            lastTrailStep = steps;
+
+                            if (UseTradeLogging)
+                                Print(string.Format("{0} | TRAIL STEP {1} (SHORT) | MFE: {2:F1}T | Stop moved to: {3}",
                                     Time[0].ToString("HH:mm:ss"), steps, mfeTicks, currentStopPrice));
                         }
                     }
@@ -3031,10 +3233,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             int consecutiveBullish = 0, consecutiveBearish = 0;
             int maxBullishStack = 0, maxBearishStack = 0;
             double maxBullishStackTopTick = 0;
+            double maxBearishStackTopTick = 0;
             double currentBullishImbVolSum = 0, currentBearishImbVolSum = 0;
             double tempMaxRatioBull = 0, tempMaxRatioBear = 0;
             double validBullishRatio = 0;
             double validAvgBullishImbVol = 0;
+            double validBearishRatio = 0;
+            double validAvgBearishImbVol = 0;
             int bullishImbalanceCount = 0, bearishImbalanceCount = 0;
             double bullishImbalanceDeltaSum = 0, bearishImbalanceDeltaSum = 0;
 
@@ -3192,6 +3397,19 @@ namespace NinjaTrader.NinjaScript.Strategies
                     if (consecutiveBearish > maxBearishStack)
                     {
                         maxBearishStack = consecutiveBearish;
+                        maxBearishStackTopTick = t;
+                        validBearishRatio = tempMaxRatioBear;
+                        validAvgBearishImbVol = currentBearishImbVolSum / consecutiveBearish;
+                    }
+                    else if (consecutiveBearish == maxBearishStack && maxBearishStack > 0)
+                    {
+                        double currentAvgVolBear = currentBearishImbVolSum / consecutiveBearish;
+                        if (tempMaxRatioBear > validBearishRatio || (tempMaxRatioBear == validBearishRatio && currentAvgVolBear > validAvgBearishImbVol))
+                        {
+                            maxBearishStackTopTick = t;
+                            validBearishRatio = tempMaxRatioBear;
+                            validAvgBearishImbVol = currentAvgVolBear;
+                        }
                     }
                 }
                 else
@@ -3221,6 +3439,24 @@ namespace NinjaTrader.NinjaScript.Strategies
                 recentBullStacks.Add(new StackInfo { BarIndex = CurrentBar, BottomPrice = bullStackBottomPrice, TopPrice = bullStackTopPrice, Size = maxBullishStack });
                 if (recentBullStacks.Count > maxStackMemory) recentBullStacks.RemoveAt(0);
             }
+
+            double bearStackTopPrice = maxBearishStackTopTick * TickSize;
+            double bearStackBottomPrice = (maxBearishStackTopTick - maxBearishStack + 1) * TickSize;
+
+            int bearClusterCount = 1;
+            if (maxBearishStack > 0)
+            {
+                PruneRecentBearStacks();
+
+                foreach (var s in recentBearStacks)
+                {
+                    double overlapBottom = bearStackBottomPrice > s.BottomPrice ? bearStackBottomPrice : s.BottomPrice;
+                    double overlapTop = bearStackTopPrice < s.TopPrice ? bearStackTopPrice : s.TopPrice;
+                    if (overlapTop >= overlapBottom) bearClusterCount++;
+                }
+                recentBearStacks.Add(new StackInfo { BarIndex = CurrentBar, BottomPrice = bearStackBottomPrice, TopPrice = bearStackTopPrice, Size = maxBearishStack });
+                if (recentBearStacks.Count > maxStackMemory) recentBearStacks.RemoveAt(0);
+            }
             #endregion
 
             #region POC & Derived Metrics
@@ -3243,6 +3479,20 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             int cAdvLong = bullishImbalanceCount - bearishImbalanceCount;
             double dAdvLong = bullishImbalanceDeltaSum - bearishImbalanceDeltaSum;
+
+            // Short-side derived metrics
+            double domVolShortPercent = 0;
+            if (totalBarVol > 0) domVolShortPercent = ((validAvgBearishImbVol * maxBearishStack) / totalBarVol) * 100.0;
+
+            double maxBearishStackBottomTick = maxBearishStackTopTick - maxBearishStack + 1;
+            double escapeShortTicks = (maxBearishStackBottomTick * TickSize - Close[1]) / TickSize;
+            double stackMidTickShort = maxBearishStackTopTick - ((maxBearishStack - 1.0) / 2.0);
+
+            double stackPosShort = DefaultSessionPosition;
+            if (endTick > startTick) stackPosShort = (stackMidTickShort - startTick) / (double)(endTick - startTick);
+
+            int cAdvShort = bearishImbalanceCount - bullishImbalanceCount;
+            double dAdvShort = bearishImbalanceDeltaSum - bullishImbalanceDeltaSum;
             #endregion
 
             #region Market Regime Detection
@@ -3264,6 +3514,16 @@ namespace NinjaTrader.NinjaScript.Strategies
             string sessionBucketStr = GetSessionLocationBucketString(sessionBucket);
             string spatialPairStr = GetSpatialPairLabel(sessionBucket, vaContext);
 
+            // Short-side recency uses LOW of bar for recency calculation (bearish stack position from bottom)
+            double stackRecencyShort = CalculateStackRecencyShort((int)maxBearishStackTopTick, maxBearishStack, barHighTick, barLowTick);
+            double stackMidPriceShortCalc = (maxBearishStackTopTick - ((maxBearishStack - 1.0) / 2.0)) * TickSize;
+            double sessionPosShort = GetSessionPosition(stackMidPriceShortCalc);
+            SessionContext stackContextShortEnum = GetStackContext(sessionPosShort);
+            string stackContextShort = GetSessionContextString(stackContextShortEnum);
+            SessionLocationBucket sessionBucketShort = GetSessionLocationBucket(sessionPosShort);
+            string sessionBucketShortStr = GetSessionLocationBucketString(sessionBucketShort);
+            string spatialPairShortStr = GetSpatialPairLabel(sessionBucketShort, vaContext);
+
             double adaptiveMinVol = adaptiveReady ? adaptiveVolumeBaseline * AdaptiveVolumeMinMultiplier : S3_MinVolume;
             double adaptiveMaxVol = adaptiveReady ? adaptiveVolumeBaseline + (adaptiveVolumeStdDev * AdaptiveVolumeMaxStdDevMultiplier) : S3_MaxVolume;
 
@@ -3280,16 +3540,20 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             #region POC Migration & Delta Divergence
             bool revUp = false;
+            bool revDown = false;
             double pMig1 = 0;
             if (pocBarsProcessed >= 2 && totalBarVol > 0)
             {
                 pMig1 = currentPocPrice - prevPoc1;
                 double pMig2 = prevPoc1 - prevPoc2;
                 revUp = (pMig1 > 0 && pMig2 <= 0);
+                revDown = (pMig1 < 0 && pMig2 >= 0);
             }
 
             bool improvingDeltaLong = (barDelta > prevBarDelta1) && (prevBarDelta1 > prevBarDelta2);
             bool divLong = (barDelta > prevBarDelta1);
+            bool improvingDeltaShort = (barDelta < prevBarDelta1) && (prevBarDelta1 < prevBarDelta2);
+            bool divShort = (barDelta < prevBarDelta1);
             #endregion
 
             #region CD Slope Calculations
@@ -3324,6 +3588,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             bool constantVolumeBarMode = IsConstantVolumeBarEnvironment(totalBarVol);
             AdaptiveContextFamily adaptiveContextFamily = GetAdaptiveContextFamily(sessionBucket, vaContext);
             AdaptiveRuleProfile adaptiveProfile = GetAdaptiveRuleProfile(adaptiveContextFamily, constantVolumeBarMode);
+            AdaptiveContextFamily adaptiveContextFamilyShort = GetAdaptiveContextFamilyShort(sessionBucketShort, vaContext);
+            AdaptiveRuleProfile adaptiveProfileShort = GetAdaptiveRuleProfileShort(adaptiveContextFamilyShort, constantVolumeBarMode);
             bool disableBarVolumeDependentFilters = constantVolumeBarMode && AutoDisableBarVolumeFiltersOnConstantVolume;
             if (UseAdaptiveContextMatrix && adaptiveProfile.DisableBarVolumeDependentFilters)
                 disableBarVolumeDependentFilters = true;
@@ -3419,6 +3685,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             #region Tier A Long Validation
             bool s3_long_valid = false;
+            bool longEntryTaken = false;
 
             if (S3_Enable && maxBullishStack >= S3_MinStackSize && maxBullishStack <= S3_MaxStackSize)
             {
@@ -4371,6 +4638,572 @@ namespace NinjaTrader.NinjaScript.Strategies
                     lastEntryBookAskVol = 0;  // Placeholder pending OnMarketDepth() integration
 
                     EnterLong("MomLE");
+                    longEntryTaken = true;
+                }
+            }
+            #endregion
+            } // closes S3 long if
+
+            #region Tier A Short Validation and Entry
+            bool passMinBarSecsShort = true;
+            bool passMaxEscapeGlobalShort = true;
+
+            if (AllowShortTrades && !longEntryTaken && Position.MarketPosition == MarketPosition.Flat
+                && S3_Enable && maxBearishStack >= S3_MinStackSize && maxBearishStack <= S3_MaxStackSize)
+            {
+                bool s3_short_valid = true;
+
+                // Bear Count Filter (mirrors S3_UseBullCount)
+                if (S3_UseBullCount && (bearishImbalanceCount < S3_MinBullCount || bearishImbalanceCount > S3_MaxBullCount)) s3_short_valid = false;
+
+                // CD Slope: for shorts require NEGATIVE slope (selling pressure)
+                if (S3_UseCdSlope && (cdSlopeLog_S3_Long > -S3_MinCdSlope || cdSlopeLog_S3_Long < -S3_MaxCdSlope)) s3_short_valid = false;
+                if (S3_RequireDivergence && marketRegime != MarketRegime.BearDiv) s3_short_valid = false;
+                if (!disableBarVolumeDependentFilters && S3_UseMinVolume && totalBarVol < S3_MinVolume) s3_short_valid = false;
+                if (!disableBarVolumeDependentFilters && S3_UseMaxVolume && totalBarVol > S3_MaxVolume) s3_short_valid = false;
+                if (S3_UseMaxImbVol && validAvgBearishImbVol > S3_MaxImbVol) s3_short_valid = false;
+                if (S3_UseDominance && (cAdvShort < S3_MinDomCount || dAdvShort < S3_MinDomDelta)) s3_short_valid = false;
+
+                // Volume Spike Filter
+                if (!disableBarVolumeDependentFilters && S3_UseVolumeSpike)
+                {
+                    if (currentVolSpikeRatio < S3_MinVolumeSpikeRatio || currentVolSpikeRatio > S3_MaxVolumeSpikeRatio) s3_short_valid = false;
+                }
+
+                // POC Checks: for shorts, HIGH POC position is favorable
+                if (S3_UseMinPoc && pocPosition > (1.0 - S3_MinPoc)) s3_short_valid = false;
+                if (S3_UsePoc && pocPosition < (1.0 - S3_MaxPoc)) s3_short_valid = false;
+
+                // Recency Check
+                if (S3_UseRecency && (stackRecencyShort < S3_MinRecency || stackRecencyShort > S3_MaxRecency)) s3_short_valid = false;
+
+                bool effectiveUseMinEscapeShort = UseAdaptiveContextMatrix ? adaptiveProfileShort.UseMinEscape : S3_UseMinEscape;
+                double effectiveMinEscapeShort = UseAdaptiveContextMatrix ? adaptiveProfileShort.MinEscape : S3_MinEscape;
+                bool effectiveUseMaxEscapeShort = UseAdaptiveContextMatrix ? adaptiveProfileShort.UseMaxEscape : S3_UseMaxEscape;
+                double effectiveMaxEscapeShort = UseAdaptiveContextMatrix ? adaptiveProfileShort.MaxEscape : S3_MaxEscape;
+
+                if (effectiveUseMinEscapeShort && escapeShortTicks < effectiveMinEscapeShort) s3_short_valid = false;
+                if (effectiveUseMaxEscapeShort && escapeShortTicks > effectiveMaxEscapeShort) s3_short_valid = false;
+
+                if (!UseAdaptiveContextMatrix)
+                {
+                    if (S3_UseMinDomVol && domVolShortPercent < S3_MinDomVol) s3_short_valid = false;
+                    if (S3_UseMaxDomVol && domVolShortPercent > S3_MaxDomVol) s3_short_valid = false;
+                }
+
+                // Bar Quality & Delta Filter (for shorts: negative delta favored)
+                if (S3_UseBarDelta && (barDelta > -S3_MinBarDelta || barDelta < -S3_MaxBarDelta)) s3_short_valid = false;
+                if (S3_UseNormalizedDelta && (normDeltaPct > -S3_MinNormalizedDeltaPct || normDeltaPct < -S3_MaxNormalizedDeltaPct)) s3_short_valid = false;
+
+                if (S3_UseMinOppStack && maxBullishStack < S3_MinOppStack) s3_short_valid = false;
+                if (S3_UseMaxOppStack && maxBullishStack > S3_MaxOppStack) s3_short_valid = false;
+
+                if (S3_UseDeltaDivergence)
+                {
+                    if (S3_RequireDeceleration && !improvingDeltaShort) s3_short_valid = false;
+                    else if (!S3_RequireDeceleration && !divShort) s3_short_valid = false;
+                }
+
+                if (S3_UseCdSlopeAccel && s3_slopeAccel > -S3_MinCdSlopeAccel) s3_short_valid = false;
+
+                // Absorption: Check HIGH zone for shorts (supply absorption at the top)
+                double s3_absShortPct = (totalBarVol > 0) ? (s3_highZoneVol / totalBarVol) * 100.0 : 0;
+                double s3_absShortMult = s3_highAsk / Math.Max(1.0, avgVolPerTick);
+
+                if (S3_UseAbsorption)
+                {
+                    if (s3_absShortPct < S3_MinAbsorptionPct) s3_short_valid = false;
+                    if (S3_UseMaxAbsorption && s3_absShortPct > S3_MaxAbsorptionPct) s3_short_valid = false;
+                    if (s3_absShortMult < S3_MinAbsorptionMultiple) s3_short_valid = false;
+                }
+
+                if (S3_UsePocMigration)
+                {
+                    if (pocBarsProcessed < 2) s3_short_valid = false;
+                    else
+                    {
+                        if (S3_RequirePocReversal && !revDown) s3_short_valid = false;
+                        if (-pMig1 / TickSize < S3_MinPocMigrationTicks) s3_short_valid = false;
+                    }
+                }
+
+                // AVWAP 4-TIER ENGINE (for shorts)
+                if (UseAvwapFilter)
+                {
+                    if (activeAnchorIdx <= 0 || activeAnchorIdx > CurrentBar - 1)
+                    {
+                        s3_short_valid = false;
+                    }
+                    else
+                    {
+                        // For shorts: distance is ABOVE VWAP (positive = above = favorable)
+                        double distTicksShort = (Close[1] - activeLiveAvwap) / TickSize;
+
+                        // VWAP Acceptance Rule
+                        if (UseVwapAcceptanceFilter && !activeAnchorReclaimed)
+                            s3_short_valid = false;
+
+                        // SLOPE VETO: For shorts, rising VWAP = veto (don't fight uptrend)
+                        if (UseAvwapSlopeFilter && activeHistoricalAvwap > 0 && activeLiveAvwap > 0)
+                        {
+                            double slopeUpTicks = (activeLiveAvwap - activeHistoricalAvwap) / TickSize;
+                            if (slopeUpTicks >= AvwapSlopeVetoTicks)
+                                s3_short_valid = false;
+                        }
+
+                        // TIER 1: DEADZONE & BELOW VWAP (too close or below VWAP)
+                        if (distTicksShort < AvwapDeadzoneTicks)
+                        {
+                            s3_short_valid = false;
+                        }
+                        // TIER 4: KILLZONE (too far above VWAP)
+                        else if (distTicksShort > AvwapKillzoneTicks)
+                        {
+                            s3_short_valid = false;
+                        }
+                        // TIER 3: EXTREME ZONE (stall proof required)
+                        else if (distTicksShort > AvwapExtremeTicks)
+                        {
+                            bool hasAbsorptionStallProofShort = S3_UseAbsorption
+                                && s3_absShortPct >= S3_MinAbsorptionPct
+                                && (!S3_UseMaxAbsorption || s3_absShortPct <= S3_MaxAbsorptionPct)
+                                && s3_absShortMult >= S3_MinAbsorptionMultiple;
+
+                            bool hasStallProofShort = isExhaustion || isClimax || improvingDeltaShort || hasAbsorptionStallProofShort;
+
+                            if (!hasStallProofShort)
+                                s3_short_valid = false;
+                        }
+                        // TIER 2: SWEET SPOT
+                        // else: pass
+                    }
+                }
+
+                if (UseKeyLevelGate && !keyLevelGatePass)
+                    s3_short_valid = false;
+
+                // GLOBAL GATES
+                if (UseVolatilityRegimeGate && !volRegimeGateAllowed)
+                    s3_short_valid = false;
+
+                if (!IsMicroRegimeAllowed())
+                    s3_short_valid = false;
+
+                if (UseSessionContextFilter && !IsSessionContextAllowed(stackContextShortEnum))
+                    s3_short_valid = false;
+
+                passMinBarSecsShort = !UseMinBarSecs || signalBarSecs >= MinBarSecsThreshold;
+                if (!passMinBarSecsShort)
+                    s3_short_valid = false;
+
+                passMaxEscapeGlobalShort = !UseMaxEscapeGlobal || escapeShortTicks <= MaxEscapeGlobalTicks;
+                if (!passMaxEscapeGlobalShort)
+                    s3_short_valid = false;
+
+                // Adaptive Context Matrix for shorts
+                bool preMatrixPassShort = s3_short_valid;
+                bool matrixVerdictShort = true;
+                string matrixProofStateShort = "";
+                string matrixBlockReasonShort = "";
+
+                if (UseAdaptiveContextMatrix)
+                {
+                    switch (adaptiveContextFamilyShort)
+                    {
+                        case AdaptiveContextFamily.CeilingValueReject:
+                        {
+                            bool clusterOrDomPassShort = bearClusterCount >= 2 || domVolShortPercent >= adaptiveProfileShort.MinDomVol;
+                            if (!clusterOrDomPassShort)
+                            {
+                                matrixVerdictShort = false;
+                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
+                                    matrixBlockReasonShort = "CeilingReject: needs bear cluster >= 2 or DomVol support";
+                            }
+
+                            bool valueRejectGate = improvingDeltaShort || divShort || ((s3_absShortMult >= 1.5) && (escapeShortTicks <= 0));
+                            if (!valueRejectGate)
+                            {
+                                matrixVerdictShort = false;
+                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
+                                    matrixBlockReasonShort = "CeilingReject: needs improving delta/divergence or absorption supply";
+                            }
+
+                            bool reclaimPassShort = !adaptiveProfileShort.RequireAvwapReclaim || activeAnchorIdx <= 0 || activeAnchorReclaimed;
+                            if (!reclaimPassShort)
+                            {
+                                matrixVerdictShort = false;
+                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
+                                    matrixBlockReasonShort = "CeilingReject: active AVWAP reclaim required";
+                            }
+
+                            matrixProofStateShort = string.Format("ClusterOrDom={0} | ValueReject={1} | Reclaim={2}",
+                                clusterOrDomPassShort, valueRejectGate, reclaimPassShort);
+                            break;
+                        }
+
+                        case AdaptiveContextFamily.AboveValueReversal:
+                        {
+                            bool clusterOrDomPassShort = bearClusterCount >= 2 || domVolShortPercent >= adaptiveProfileShort.MinDomVol;
+                            if (!clusterOrDomPassShort)
+                            {
+                                matrixVerdictShort = false;
+                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
+                                    matrixBlockReasonShort = "AboveVAH: needs bear cluster >= 2 or DomVol support";
+                            }
+
+                            bool reversalGateAShort = improvingDeltaShort && (barDelta < 0) && (validBearishRatio >= adaptiveProfileShort.MinRatio);
+                            bool reversalGateBShort = (s3_absShortMult >= 2.0) && (escapeShortTicks <= 0);
+                            bool reversalProofShort = reversalGateAShort || reversalGateBShort;
+                            if (!reversalProofShort)
+                            {
+                                matrixVerdictShort = false;
+                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
+                                    matrixBlockReasonShort = "AboveVAH: needs negative reclaim proof or absorption reversal";
+                            }
+
+                            bool pocDropPassShort = !adaptiveProfileShort.RequirePocLift
+                                || ((pocBarsProcessed >= 2) && (pMig1 < 0 || revDown));
+                            if (!pocDropPassShort)
+                            {
+                                matrixVerdictShort = false;
+                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
+                                    matrixBlockReasonShort = "AboveVAH: POC drop required";
+                            }
+
+                            bool reclaimPassShort = !adaptiveProfileShort.RequireAvwapReclaim || activeAnchorIdx <= 0 || activeAnchorReclaimed;
+                            if (!reclaimPassShort)
+                            {
+                                matrixVerdictShort = false;
+                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
+                                    matrixBlockReasonShort = "AboveVAH: active AVWAP reclaim required";
+                            }
+
+                            matrixProofStateShort = string.Format("ClusterOrDom={0} | GateA={1} | GateB={2} | POCDrop={3} | Reclaim={4}",
+                                clusterOrDomPassShort, reversalGateAShort, reversalGateBShort, pocDropPassShort, reclaimPassShort);
+                            break;
+                        }
+
+                        case AdaptiveContextFamily.WithGrainShortContinuation:
+                        {
+                            bool domPassShort = domVolShortPercent >= adaptiveProfileShort.MinDomVol;
+                            if (!domPassShort)
+                            {
+                                matrixVerdictShort = false;
+                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
+                                    matrixBlockReasonShort = "ShortCont: DomVol below minimum";
+                            }
+
+                            matrixProofStateShort = string.Format("DomPass={0} (Need>={1:F1})", domPassShort, adaptiveProfileShort.MinDomVol);
+                            break;
+                        }
+
+                        case AdaptiveContextFamily.LowerValueFriction:
+                        {
+                            bool domPassShort = domVolShortPercent >= adaptiveProfileShort.MinDomVol;
+                            if (!domPassShort)
+                            {
+                                matrixVerdictShort = false;
+                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
+                                    matrixBlockReasonShort = "LowerFriction: DomVol below minimum";
+                            }
+
+                            bool ratioPassShort = validBearishRatio >= adaptiveProfileShort.MinRatio;
+                            if (!ratioPassShort)
+                            {
+                                matrixVerdictShort = false;
+                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
+                                    matrixBlockReasonShort = "LowerFriction: ratio below minimum";
+                            }
+
+                            bool improvingPassShort = !adaptiveProfileShort.RequireImprovingDelta || improvingDeltaShort;
+                            if (!improvingPassShort)
+                            {
+                                matrixVerdictShort = false;
+                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
+                                    matrixBlockReasonShort = "LowerFriction: improving delta required";
+                            }
+
+                            matrixProofStateShort = string.Format("DomPass={0} | RatioPass={1} | ImprovingDelta={2}",
+                                domPassShort, ratioPassShort, improvingPassShort);
+                            break;
+                        }
+
+                        case AdaptiveContextFamily.BasementBreakdown:
+                        {
+                            bool intensityPassShort = (domVolShortPercent >= adaptiveProfileShort.MinDomVol) || (validBearishRatio >= adaptiveProfileShort.MinRatio);
+                            if (!intensityPassShort)
+                            {
+                                matrixVerdictShort = false;
+                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
+                                    matrixBlockReasonShort = "BasementBreak: needs DomVol or Ratio breakdown intensity";
+                            }
+
+                            matrixProofStateShort = string.Format("IntensityPass={0} (Dom>={1:F1} OR Ratio>={2:F1})",
+                                intensityPassShort, adaptiveProfileShort.MinDomVol, adaptiveProfileShort.MinRatio);
+                            break;
+                        }
+                    }
+
+                    if (string.IsNullOrEmpty(matrixProofStateShort))
+                        matrixProofStateShort = "No family-specific matrix rules fired";
+
+                    if (matrixVerdictShort && string.IsNullOrEmpty(matrixBlockReasonShort))
+                        matrixBlockReasonShort = "PASS";
+                }
+
+                bool fullEnginePassShort = preMatrixPassShort && matrixVerdictShort;
+
+                if (UseAdaptiveContextMatrix)
+                {
+                    if (ShadowMatrixMode)
+                        s3_short_valid = preMatrixPassShort;
+                    else
+                        s3_short_valid = fullEnginePassShort;
+                }
+                else
+                {
+                    s3_short_valid = preMatrixPassShort;
+                }
+
+                bool validShortSignal = s3_short_valid && CooldownWindowComplete(Time[0]);
+
+                if (validShortSignal)
+                {
+                    // Capture Entry Snapshot for Short
+                    lastEntryContext = stackContextShort;
+                    lastEntryVolRegime = volRegime;
+                    lastEntryStackRecency = stackRecencyShort;
+                    lastEntrySessionPos = sessionPosShort;
+                    lastEntryVolZScore = volZScore;
+                    lastEntryAdaptiveMinVol = adaptiveMinVol;
+                    lastEntryAdaptiveMaxVol = adaptiveMaxVol;
+                    lastEntryTimeBaseline = timeBaseline;
+                    lastEntryFollowThroughRate = ftRate;
+                    lastEntryAvgMfe = ftAvgMfe;
+                    lastEntryClusterCount = bearClusterCount;
+
+                    lastEntryAdaptiveVolBase = adaptiveVolumeBaseline;
+                    lastEntryAdaptiveVolStdDev = adaptiveVolumeStdDev;
+                    lastEntryTotalBarVol = totalBarVol;
+                    lastEntryVolumeSpikeRatio = currentVolSpikeRatio;
+                    lastEntryTimeAdjMinVol = timeAdjustedMinVol;
+                    lastEntryFtSampleCount = ftSampleCount;
+                    lastEntryFtAvgMae = ftAvgMae;
+                    lastEntryNetCnt = cAdvShort;
+                    lastEntryRegimeAllowed = regimeAllowed;
+                    lastEntryBaseStackPass = (S3_Enable && maxBearishStack >= S3_MinStackSize && maxBearishStack <= S3_MaxStackSize);
+                    lastEntryPreMatrixPass = preMatrixPassShort;
+                    lastEntryMatrixVerdict = matrixVerdictShort;
+
+                    lastEntryBarDelta = barDelta;
+                    lastEntryNormDeltaPct = normDeltaPct;
+                    lastEntryBarDir = barDir;
+                    lastEntryPrevBarDelta1 = prevBarDelta1;
+                    lastEntryPrevBarDelta2 = prevBarDelta2;
+                    lastEntryImprovingDelta = improvingDeltaShort;
+                    lastEntryDivLong = divShort;
+                    lastEntryPocMig1 = pMig1 / TickSize;
+                    lastEntryRevUp = revDown;
+                    lastEntryCurrentPoc = currentPocPrice;
+                    lastEntryPrevPoc1 = prevPoc1;
+                    lastEntryPrevPoc2 = prevPoc2;
+
+                    lastEntryVolRegimeGateAllowed = volRegimeGateAllowed;
+                    lastEntryRollingR1k = rollingR1k;
+                    lastEntryMicroRegime = GetMicroRegimeString(currentMicroRegime);
+                    lastEntrySessionContextGateAllowed = IsSessionContextAllowed(stackContextShortEnum);
+                    lastEntryMinSecsPass = passMinBarSecsShort;
+                    lastEntryMaxEscapeGlobalPass = passMaxEscapeGlobalShort;
+                    lastEntryAdaptive40RangeFilterPass = true;
+                    lastEntryESRangeFilterPass = true;
+
+                    lastEntryBarIsClimax = isClimax;
+                    lastEntryBarIsExhaustion = isExhaustion;
+                    lastEntryPrevBarWasClimax = prevBarClimaxState;
+                    lastEntryClimaxScore = climaxScore;
+                    lastEntryExhaustionScore = exhaustionScore;
+                    lastEntryClimaxPrevVol = priorBarVolumeForTelemetry;
+                    lastEntryClimaxCurVol = totalBarVol;
+                    lastEntryPassClimaxFilter = passClimaxFilter;
+                    lastEntryPassExhaustionFilter = !UseExhaustionFilter || isExhaustion || !RequireExhaustionSetup;
+
+                    lastEntryVAH = nyseSessionVAH;
+                    lastEntryVAL = nyseSessionVAL;
+                    lastEntrySessionPOCVA = nyseSessionPOC;
+                    lastEntryVAContext = vaContextStr;
+                    lastEntryPriceDistToPOC = priceDistToPOC;
+                    lastEntryPassVAFilter = passVAFilter;
+
+                    lastEntryDeltaROC = currentDeltaROC;
+                    lastEntryDeltaAccel = currentDeltaAccel;
+                    lastEntryDeltaVelocityScore = deltaVelocityScore;
+                    lastEntryDeltaMomentum = GetDeltaMomentumString(currentDeltaMomentum);
+                    lastEntryPassDeltaVelocityFilter = passDeltaVelocityFilter;
+
+                    lastEntryOlderSlope = s3_olderSlope;
+                    lastEntrySlopeAccel = s3_slopeAccel;
+                    lastEntryPassCdAccel = !S3_UseCdSlopeAccel || (s3_slopeAccel <= -S3_MinCdSlopeAccel);
+                    lastEntryPassDeltaDiv = !S3_UseDeltaDivergence || (S3_RequireDeceleration ? improvingDeltaShort : divShort);
+
+                    double s3_absShortPctSnap = (totalBarVol > 0) ? (s3_highZoneVol / totalBarVol) * 100.0 : 0;
+                    double s3_absShortMultSnap = s3_highAsk / Math.Max(1.0, avgVolPerTick);
+
+                    lastEntryLowZoneVol = s3_highZoneVol;
+                    lastEntryLowBid = s3_highAsk;
+                    lastEntryLowAsk = s3_highBid;
+                    lastEntryAbsPct = s3_absShortPctSnap;
+                    lastEntryAbsMult = s3_absShortMultSnap;
+                    lastEntryPassAbsorb = !S3_UseAbsorption ||
+                                          ((s3_absShortPctSnap >= S3_MinAbsorptionPct) &&
+                                           (!S3_UseMaxAbsorption || s3_absShortPctSnap <= S3_MaxAbsorptionPct) &&
+                                           (s3_absShortMultSnap >= S3_MinAbsorptionMultiple));
+                    lastEntryPassPocMig = !S3_UsePocMigration || ((pocBarsProcessed >= 2) && (!S3_RequirePocReversal || revDown) && (-pMig1 / TickSize >= S3_MinPocMigrationTicks));
+
+                    lastEntryAdaptiveFamily = GetAdaptiveContextFamilyString(adaptiveContextFamilyShort);
+                    lastEntryAdaptiveRuleSummary = "";
+                    lastEntryMatrixProofState = matrixProofStateShort;
+                    lastEntryMatrixBlockReason = matrixBlockReasonShort;
+                    lastEntryConstantVolumeMode = constantVolumeBarMode;
+                    lastEntryDisableBarVolumeFilters = disableBarVolumeDependentFilters;
+                    lastEntrySessionAxis = sessionBucketShortStr;
+                    lastEntrySpatialPair = spatialPairShortStr;
+
+                    lastEntrySignalPrice = Close[1];
+                    lastEntrySessionHigh = sessionHigh;
+                    lastEntrySessionLow = sessionLow;
+                    lastEntrySessionMid = signalSessionMid;
+                    lastEntrySignalBarRangeTicks = signalBarRangeTicks;
+                    lastEntrySignalBarSecs = signalBarSecs;
+                    lastEntryRangePer1kVolumeTicks = rangePer1kVolumeTicks;
+                    lastEntryDeltaPerTick = deltaPerTick;
+                    lastEntryDeltaPctOfVolume = deltaPctOfVolume;
+                    lastEntryImbalanceDensity = imbalanceDensity;
+                    lastEntryPocVolPct = pocVolPct;
+                    lastEntryMaxVolAtPrice = maxVolAtPrice;
+                    lastEntryUpperZoneVol = s3_lowZoneVol;
+                    lastEntryUpperZonePct = lowZonePct;
+                    lastEntryLowZonePct = highZonePct;
+                    lastEntryBullishImbalanceCount = bullishImbalanceCount;
+                    lastEntryBearishImbalanceCount = bearishImbalanceCount;
+                    lastEntryMaxBullishStack = maxBullishStack;
+                    lastEntryMaxBearishStack = maxBearishStack;
+                    lastEntryEscapeTicks = escapeShortTicks;
+                    lastEntryDomVolPercent = domVolShortPercent;
+                    lastEntryValidBullishRatio = validBearishRatio == double.MaxValue ? 999.0 : validBearishRatio;
+                    lastEntryPocPosition = pocPosition;
+                    lastEntryRangeBarMode = rangeBarMode;
+                    lastEntryRangePace = rangePaceLabel;
+                    lastEntryRangeClosePos = signalClosePosPct;
+                    lastEntryRangeBodyPct = signalBodyPct;
+                    lastEntryRangeOverlapPct = signalOverlapPct;
+                    lastEntryRangeLowerWickPct = signalLowerWickPct;
+                    lastEntryRangeUpperWickPct = signalUpperWickPct;
+                    lastEntryPriceToSessionLowTicks = priceToSessionLowTicks;
+                    lastEntryPriceToSessionHighTicks = priceToSessionHighTicks;
+                    lastEntryPriceToSessionMidTicks = priceToSessionMidTicks;
+                    lastEntryPriceToVALTicks = priceToVALTicks;
+                    lastEntryPriceToVAHTicks = priceToVAHTicks;
+                    lastEntryPriceToPOCSignedTicks = priceToPOCSignedTicks;
+                    lastEntryKeyLevelSummary = keyLevelSummary;
+                    lastEntryNearestKeyLevel = nearestKeyLevel;
+                    lastEntryNearestKeyLevelDistTicks = nearestKeyLevelAbsTicks == double.MaxValue ? 0 : nearestKeyLevelAbsTicks;
+                    lastEntryNearVWAP = nearVWAP;
+                    lastEntryNearPDH = nearPDH;
+                    lastEntryNearPDL = nearPDL;
+                    lastEntryNearIBH = nearIBH;
+                    lastEntryNearIBL = nearIBL;
+                    lastEntryNearPMH = nearPMH;
+                    lastEntryNearPML = nearPML;
+                    lastEntryNearPOC = nearPOC;
+                    lastEntryKeyLevelGatePass = keyLevelGatePass;
+
+                    // Build Short Trade Log
+                    string localTradeLogShort = "";
+                    if (UseTradeLogging)
+                    {
+                        double logRatioShort = validBearishRatio == double.MaxValue ? 999.0 : validBearishRatio;
+
+                        var logSbShort = new StringBuilder();
+                        logSbShort.AppendFormat("SigBar: {0} | Entry: {{ENTRY_TIME}} | SHORT (TIER A SHORT) | SigPx: {1} | Dir: {2} | ",
+                            Time[1].ToString("yyyy-MM-dd HH:mm:ss"), Close[1], barDir);
+                        logSbShort.AppendFormat("BarDelta: {0:F0} | Stack: {1} (Pos: {2:F2} | Ratio: {3:F1} | OppStack: {4}) | ",
+                            barDelta, maxBearishStack, stackPosShort, logRatioShort, maxBullishStack);
+                        logSbShort.AppendFormat("ImbVol: {0:F1} | Vol: {1} | POC: {2:F2} (PocVol: {3:F0} / {4:F1}%) | ",
+                            validAvgBearishImbVol, totalBarVol, pocPosition, maxVolAtPrice, pocVolPct);
+                        logSbShort.AppendFormat("CvdState: {0} (Allowed: {1}) | ImbCount: [{2}B/{3}S/NetCnt: {4}/NetD: {5:+0;-0;0}] | Escape: {6:F0}T | ",
+                            stateNameStr, regimeAllowed, bullishImbalanceCount, bearishImbalanceCount, cAdvShort, dAdvShort, escapeShortTicks);
+                        logSbShort.AppendFormat("DomVol: {0:F1}% | CD Slope: {1:F2}% | CtxFam: {2} | Pair: {3} | KeyLvl: {4} | SigRange: {5:F1}T | SigSecs: {6:F2} | R1k: {7:F1}T | D/V: {8:F1}%",
+                            domVolShortPercent, cdSlopeLog_S3_Long, GetAdaptiveContextFamilyString(adaptiveContextFamilyShort), spatialPairShortStr, nearestKeyLevel, signalBarRangeTicks, signalBarSecs, rangePer1kVolumeTicks, deltaPctOfVolume);
+
+                        localTradeLogShort = logSbShort.ToString();
+                    }
+
+                    pendingTradeLog = localTradeLogShort.Replace("{ENTRY_TIME}", Time[0].ToString("yyyy-MM-dd HH:mm:ss"));
+
+                    CaptureAnchorAvwapTelemetry(
+                        vBarsType, rthOpenBarIdx, hasReclaimedOpenVwap,
+                        out lastEntryAvwapOpen, out lastEntryAvwapOpenHistorical, out lastEntryAvwapOpenSignalDistTicks,
+                        out lastEntryAvwapOpenSlopeDropTicks, out lastEntryAvwapOpenTier, out lastEntryAvwapOpenSlope, out lastEntryAvwapOpenReclaimed);
+
+                    CaptureAnchorAvwapTelemetry(
+                        vBarsType, sessionHighBarIdx, hasReclaimedHighVwap,
+                        out lastEntryAvwapHigh, out lastEntryAvwapHighHistorical, out lastEntryAvwapHighSignalDistTicks,
+                        out lastEntryAvwapHighSlopeDropTicks, out lastEntryAvwapHighTier, out lastEntryAvwapHighSlope, out lastEntryAvwapHighReclaimed);
+
+                    CaptureAnchorAvwapTelemetry(
+                        vBarsType, sessionLowBarIdx, hasReclaimedLowVwap,
+                        out lastEntryAvwapLow, out lastEntryAvwapLowHistorical, out lastEntryAvwapLowSignalDistTicks,
+                        out lastEntryAvwapLowSlopeDropTicks, out lastEntryAvwapLowTier, out lastEntryAvwapLowSlope, out lastEntryAvwapLowReclaimed);
+
+                    lastEntryAvwapActiveAnchor = "N/A";
+                    lastEntryAvwapTier = "N/A";
+                    lastEntryAvwapSlope = "N/A";
+                    lastEntryAvwapSlopeDropTicks = 0;
+                    lastEntryAvwapSignalDistTicks = 0;
+                    lastEntryAvwapReclaimed = false;
+
+                    switch (AvwapAnchor)
+                    {
+                        case AvwapAnchorType.SessionOpen:
+                            lastEntryAvwapActiveAnchor = "OPEN";
+                            lastEntryAvwapTier = lastEntryAvwapOpenTier;
+                            lastEntryAvwapSlope = lastEntryAvwapOpenSlope;
+                            lastEntryAvwapSlopeDropTicks = lastEntryAvwapOpenSlopeDropTicks;
+                            lastEntryAvwapSignalDistTicks = lastEntryAvwapOpenSignalDistTicks;
+                            lastEntryAvwapReclaimed = lastEntryAvwapOpenReclaimed;
+                            break;
+                        case AvwapAnchorType.SessionHigh:
+                            lastEntryAvwapActiveAnchor = "HIGH";
+                            lastEntryAvwapTier = lastEntryAvwapHighTier;
+                            lastEntryAvwapSlope = lastEntryAvwapHighSlope;
+                            lastEntryAvwapSlopeDropTicks = lastEntryAvwapHighSlopeDropTicks;
+                            lastEntryAvwapSignalDistTicks = lastEntryAvwapHighSignalDistTicks;
+                            lastEntryAvwapReclaimed = lastEntryAvwapHighReclaimed;
+                            break;
+                        case AvwapAnchorType.SessionLow:
+                            lastEntryAvwapActiveAnchor = "LOW";
+                            lastEntryAvwapTier = lastEntryAvwapLowTier;
+                            lastEntryAvwapSlope = lastEntryAvwapLowSlope;
+                            lastEntryAvwapSlopeDropTicks = lastEntryAvwapLowSlopeDropTicks;
+                            lastEntryAvwapSignalDistTicks = lastEntryAvwapLowSignalDistTicks;
+                            lastEntryAvwapReclaimed = lastEntryAvwapLowReclaimed;
+                            break;
+                    }
+
+                    if (UseTradeLogging)
+                        Print(string.Format("Immediate Short Entry | EntryBar={0:yyyy-MM-dd HH:mm:ss} | B1={1:HH:mm:ss} O1={2} C1={3}",
+                            Time[0], Time[1], Open[1], Close[1]));
+
+                    double currentBidShort = GetCurrentBid();
+                    double currentAskShort = GetCurrentAsk();
+                    double currentSpreadShort = (currentAskShort > 0 && currentBidShort > 0) ? (currentAskShort - currentBidShort) / TickSize : 0;
+                    lastEntrySignalSpread = currentSpreadShort;
+                    lastEntryAvgSpread = barSpreadCount > 0 ? barSpreadSum / barSpreadCount : currentSpreadShort;
+                    lastEntryMaxSpread = barSpreadCount > 0 ? barSpreadMax : currentSpreadShort;
+                    lastEntryBookBidVol = 0;
+                    lastEntryBookAskVol = 0;
+
+                    EnterShort("MomSE");
                 }
             }
             #endregion
@@ -4383,7 +5216,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 pocBarsProcessed++;
             }
             #endregion
-            }
         }
         #endregion
 
@@ -4394,6 +5226,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "Allow Long Trades", Order = 1, GroupName = "00. GLOBAL: Direction")]
         public bool AllowLongTrades { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Allow Short Trades", Order = 2, GroupName = "00. GLOBAL: Direction")]
+        public bool AllowShortTrades { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Allow BULL-DIV Trades", Order = 1, GroupName = "00b. GLOBAL: Allowed Regimes")]
