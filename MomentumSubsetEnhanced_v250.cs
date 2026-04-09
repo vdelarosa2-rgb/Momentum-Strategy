@@ -529,6 +529,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool lastEntryMinSecsPass = true;
         private bool lastEntryMaxEscapeGlobalPass = true;
         private bool lastEntryAdaptive40RangeFilterPass = true;
+        private bool lastEntryESRangeFilterPass = true;
         #endregion
 
         #region Microstructure Regime Tracking
@@ -611,6 +612,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Block_LowerCont_AccelBuy = true;
                 Block_MidRange_AccelBuy = true;
                 Block_NIC1 = true;
+
+                // ES 8-Range Filter
+                UseESRangeFilter = false;
+                ES_Block_HighBO_AccelBuy = true;
+                ES_Block_UpperFriction_Quiet_AccelBuy = true;
+                ES_Block_AvwapExtreme = true;
 
                 // Value Area Filter
                 UseValueAreaFilter = false;
@@ -1834,6 +1841,27 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
         #endregion
 
+        #region Helper Methods - ES 8-Range Filter
+        private bool EvaluateESRangeFilter(SessionContext sessionContext, DeltaMomentum deltaMomentum, AdaptiveContextFamily adaptiveContextFamily, VolatilityRegime volatilityRegime, double avwapDistTicks)
+        {
+            if (!UseESRangeFilter) return true;
+
+            // F1: Block SESS-HIGH-BO + ACCEL-BUY
+            if (ES_Block_HighBO_AccelBuy && sessionContext == SessionContext.SessionHighBo && deltaMomentum == DeltaMomentum.AccelBuy)
+                return false;
+
+            // F4: Block UPPER-FRICTION + QUIET + ACCEL-BUY
+            if (ES_Block_UpperFriction_Quiet_AccelBuy && adaptiveContextFamily == AdaptiveContextFamily.UpperValueFriction && volatilityRegime == VolatilityRegime.Quiet && deltaMomentum == DeltaMomentum.AccelBuy)
+                return false;
+
+            // F5: Block AVWAP EXTREME tier
+            if (ES_Block_AvwapExtreme && GetAvwapZoneLabel(avwapDistTicks) == "EXTREME")
+                return false;
+
+            return true;
+        }
+        #endregion
+
         #region Helper Methods - Value Area (NYSE Session)
         private bool IsWithinNYSESession(DateTime time)
         {
@@ -2423,6 +2451,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 EnableRegimeFilter, R1kRollingWindowBars, RegimeDenseThreshold, RegimeThinThreshold, AllowDenseRegime, AllowNormalMicroRegime, AllowThinRegime, AllowWarmupRegime));
             Print(string.Format("     ADAPTIVE-40-RANGE: Use={0} | LowerCont+AccelBuy={1} | MidRange+AccelBuy={2} | NIC=1={3}",
                 UseAdaptive40RangeFilter, Block_LowerCont_AccelBuy, Block_MidRange_AccelBuy, Block_NIC1));
+            Print(string.Format("     ES-8-RANGE: Use={0} | HighBO+AccelBuy={1} | UpperFric+Quiet+AccelBuy={2} | AvwapExtreme={3}",
+                UseESRangeFilter, ES_Block_HighBO_AccelBuy, ES_Block_UpperFriction_Quiet_AccelBuy, ES_Block_AvwapExtreme));
 
             Print("-------------------------------------------------------------------------");
             Print(string.Format("[04] TIER A PROFILE  : ENABLED = {0} | Target Size: {1} to {2}", S3_Enable, S3_MinStackSize, S3_MaxStackSize));
@@ -2591,6 +2621,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             Print(string.Format("     [ADAPTIVE-40-RANGE] Enabled={0} | Pass={1} | Regime={2} | Context={3} | Momentum={4}",
                 UseAdaptive40RangeFilter, lastEntryAdaptive40RangeFilterPass, lastEntryMicroRegime, lastEntryContext, lastEntryDeltaMomentum));
+
+            Print(string.Format("     [ES-8-RANGE] Enabled={0} | Pass={1} | Context={2} | Momentum={3} | Family={4} | VolRegime={5} | AvwapTier={6}",
+                UseESRangeFilter, lastEntryESRangeFilterPass, lastEntryContext, lastEntryDeltaMomentum, lastEntryAdaptiveFamily, lastEntryVolRegime, lastEntryAvwapTier));
 
             Print(string.Format("     [CLIMAX-EXHAUST] IsClimax: {0} | PrevClimax: {1} | IsExhaust: {2} | ClimaxScore: {3:F2} | ExhaustScore: {4:F2} | PrevVol: {5:F0} | CurVol: {6:F0} | PassClimax: {7} | PassExhaust: {8}",
                 lastEntryBarIsClimax, lastEntryPrevBarWasClimax, lastEntryBarIsExhaustion, lastEntryClimaxScore, lastEntryExhaustionScore,
@@ -3565,6 +3598,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (!adaptive40RangePass)
                     s3_long_valid = false;
 
+                // ES 8-RANGE FILTER (C3-3)
+                bool esRangeFilterPass = EvaluateESRangeFilter(stackContextEnum, currentDeltaMomentum, adaptiveContextFamily, volRegimeEnum, activeAvwapDistTicks);
+                if (!esRangeFilterPass)
+                    s3_long_valid = false;
+
                 // SIGNAL QUALITY: Min Bar Duration
                 bool passMinBarSecs = !UseMinBarSecs || signalBarSecs >= MinBarSecsThreshold;
                 if (!passMinBarSecs)
@@ -4139,6 +4177,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     lastEntryMinSecsPass = passMinBarSecs;
                     lastEntryMaxEscapeGlobalPass = passMaxEscapeGlobal;
                     lastEntryAdaptive40RangeFilterPass = adaptive40RangePass;
+                    lastEntryESRangeFilterPass = esRangeFilterPass;
 
                     lastEntryBarIsClimax = isClimax;
                     lastEntryBarIsExhaustion = isExhaustion;
@@ -4480,6 +4519,25 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "04. Block NIC = 1", Order = 4, GroupName = "03c-2. ADAPTIVE 40 RANGE")]
         public bool Block_NIC1 { get; set; }
+
+        // ==============================================================================
+        // 03c-3: ES 8-RANGE FILTER
+        // ==============================================================================
+        [NinjaScriptProperty]
+        [Display(Name = "01. Use ES 8-Range Filter", Order = 1, GroupName = "03c-3. ES 8-RANGE FILTER")]
+        public bool UseESRangeFilter { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "02. Block SESS-HIGH-BO + ACCEL-BUY (F1)", Order = 2, GroupName = "03c-3. ES 8-RANGE FILTER")]
+        public bool ES_Block_HighBO_AccelBuy { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "03. Block UPPER-FRICTION + QUIET + ACCEL-BUY (F4)", Order = 3, GroupName = "03c-3. ES 8-RANGE FILTER")]
+        public bool ES_Block_UpperFriction_Quiet_AccelBuy { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "04. Block AVWAP EXTREME Tier (F5)", Order = 4, GroupName = "03c-3. ES 8-RANGE FILTER")]
+        public bool ES_Block_AvwapExtreme { get; set; }
 
         // ==============================================================================
         // 03d: VALUE AREA FILTER
