@@ -632,6 +632,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 BlockSessLowRev = true;
                 BlockCeilingActiveAboveVAH = true;
 
+                // Week 2 Blocking Rules
+                BlockLowerContBelowValLowVol = true;
+                BlockCeilingAtVAH = true;
+                BlockLowerContCluster2 = true;
+
                 // Value Area Filter
                 UseValueAreaFilter = false;
                 VA_AllowNoVA = true;
@@ -2604,8 +2609,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 UseAdaptive40RangeFilter, Block_LowerCont_AccelBuy, Block_MidRange_AccelBuy, Block_NIC1));
             Print(string.Format("     ES-8-RANGE: Use={0} | HighBO+AccelBuy={1} | UpperFric+Quiet+AccelBuy={2} | AvwapExtreme={3}",
                 UseESRangeFilter, ES_Block_HighBO_AccelBuy, ES_Block_UpperFriction_Quiet_AccelBuy, ES_Block_AvwapExtreme));
-            Print(string.Format("     PHASE1-RULES: BlockSessLowRev={0} | BlockCeilingActiveAboveVAH={1}",
-                BlockSessLowRev, BlockCeilingActiveAboveVAH));
+            Print(string.Format("     PHASE1-RULES: BlockSessLowRev={0} | BlockCeilingActiveAboveVAH={1} | BlockLowerContBelowValLowVol={2} | BlockCeilingAtVAH={3} | BlockLowerContCluster2={4}",
+                BlockSessLowRev, BlockCeilingActiveAboveVAH, BlockLowerContBelowValLowVol, BlockCeilingAtVAH, BlockLowerContCluster2));
 
             Print("-------------------------------------------------------------------------");
             Print(string.Format("[04] TIER A PROFILE  : ENABLED = {0} | Target Size: {1} to {2}", S3_Enable, S3_MinStackSize, S3_MaxStackSize));
@@ -3889,6 +3894,31 @@ namespace NinjaTrader.NinjaScript.Strategies
                 {
                     if (UseTradeLogging)
                         Print("BLOCK: SESS-HIGH-BO + ACTIVE + ABOVE-VAH blocked by Phase1 Rule #2");
+                    s3_long_valid = false;
+                }
+
+                // W2 RULE B: Block LOWER-CONT + BELOW-VAL + (NORMAL or QUIET)
+                if (BlockLowerContBelowValLowVol && stackContextEnum == SessionContext.LowerCont && vaContext == ValueAreaContext.BelowVAL
+                    && (volRegimeEnum == VolatilityRegime.Normal || volRegimeEnum == VolatilityRegime.Quiet))
+                {
+                    if (UseTradeLogging)
+                        Print("BLOCK: LOWER-CONT + BELOW-VAL + NORMAL/QUIET blocked by W2 Rule B");
+                    s3_long_valid = false;
+                }
+
+                // W2 RULE C: Block SESS-HIGH-BO + AT-VAH (any VolRegime)
+                if (BlockCeilingAtVAH && stackContextEnum == SessionContext.SessionHighBo && vaContext == ValueAreaContext.AtVAH)
+                {
+                    if (UseTradeLogging)
+                        Print("BLOCK: SESS-HIGH-BO + AT-VAH blocked by W2 Rule C");
+                    s3_long_valid = false;
+                }
+
+                // W2 RULE F: Block LOWER-CONT + Cluster>=2
+                if (BlockLowerContCluster2 && stackContextEnum == SessionContext.LowerCont && bullClusterCount >= 2)
+                {
+                    if (UseTradeLogging)
+                        Print("BLOCK: LOWER-CONT + Cluster>=2 blocked by W2 Rule F");
                     s3_long_valid = false;
                 }
 
@@ -5407,6 +5437,18 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "02. Block SESS-HIGH-BO + ACTIVE + ABOVE-VAH (Phase1 Rule #2)", Order = 2, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
         public bool BlockCeilingActiveAboveVAH { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "03. Block LOWER-CONT + BELOW-VAL + NORMAL/QUIET (W2 Rule B)", Order = 3, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
+        public bool BlockLowerContBelowValLowVol { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "04. Block SESS-HIGH-BO + AT-VAH (W2 Rule C)", Order = 4, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
+        public bool BlockCeilingAtVAH { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "05. Block LOWER-CONT + Cluster>=2 (W2 Rule F)", Order = 5, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
+        public bool BlockLowerContCluster2 { get; set; }
 
         // ==============================================================================
         // 03d: VALUE AREA FILTER
