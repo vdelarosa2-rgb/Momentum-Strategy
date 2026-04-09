@@ -628,6 +628,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 ES_Block_UpperFriction_Quiet_AccelBuy = true;
                 ES_Block_AvwapExtreme = true;
 
+                // Phase 1 Blocking Rules
+                BlockSessLowRev = true;
+                BlockCeilingActiveAboveVAH = true;
+
                 // Value Area Filter
                 UseValueAreaFilter = false;
                 VA_AllowNoVA = true;
@@ -2600,6 +2604,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 UseAdaptive40RangeFilter, Block_LowerCont_AccelBuy, Block_MidRange_AccelBuy, Block_NIC1));
             Print(string.Format("     ES-8-RANGE: Use={0} | HighBO+AccelBuy={1} | UpperFric+Quiet+AccelBuy={2} | AvwapExtreme={3}",
                 UseESRangeFilter, ES_Block_HighBO_AccelBuy, ES_Block_UpperFriction_Quiet_AccelBuy, ES_Block_AvwapExtreme));
+            Print(string.Format("     PHASE1-RULES: BlockSessLowRev={0} | BlockCeilingActiveAboveVAH={1}",
+                BlockSessLowRev, BlockCeilingActiveAboveVAH));
 
             Print("-------------------------------------------------------------------------");
             Print(string.Format("[04] TIER A PROFILE  : ENABLED = {0} | Target Size: {1} to {2}", S3_Enable, S3_MinStackSize, S3_MaxStackSize));
@@ -3869,6 +3875,22 @@ namespace NinjaTrader.NinjaScript.Strategies
                 bool esRangeFilterPass = EvaluateESRangeFilter(stackContextEnum, currentDeltaMomentum, adaptiveContextFamily, volRegimeEnum, activeAvwapDistTicks);
                 if (!esRangeFilterPass)
                     s3_long_valid = false;
+
+                // PHASE 1 RULE #1: Block SESS-LOW-REV (Any Vol Regime)
+                if (BlockSessLowRev && stackContextEnum == SessionContext.SessionLowRev)
+                {
+                    if (UseTradeLogging)
+                        Print("BLOCK: SESS-LOW-REV context blocked by Phase1 Rule #1");
+                    s3_long_valid = false;
+                }
+
+                // PHASE 1 RULE #2: Block SESS-HIGH-BO + ACTIVE + ABOVE-VAH
+                if (BlockCeilingActiveAboveVAH && stackContextEnum == SessionContext.SessionHighBo && volRegimeEnum == VolatilityRegime.Active && vaContext == ValueAreaContext.AboveVAH)
+                {
+                    if (UseTradeLogging)
+                        Print("BLOCK: SESS-HIGH-BO + ACTIVE + ABOVE-VAH blocked by Phase1 Rule #2");
+                    s3_long_valid = false;
+                }
 
                 // SIGNAL QUALITY: Min Bar Duration
                 bool passMinBarSecs = !UseMinBarSecs || signalBarSecs >= MinBarSecsThreshold;
@@ -5374,6 +5396,17 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "04. Block AVWAP EXTREME Tier (F5)", Order = 4, GroupName = "03c-3. ES 8-RANGE FILTER")]
         public bool ES_Block_AvwapExtreme { get; set; }
+
+        // ==============================================================================
+        // 03c-4: PHASE 1 BLOCKING RULES
+        // ==============================================================================
+        [NinjaScriptProperty]
+        [Display(Name = "01. Block SESS-LOW-REV (Phase1 Rule #1)", Order = 1, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
+        public bool BlockSessLowRev { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "02. Block SESS-HIGH-BO + ACTIVE + ABOVE-VAH (Phase1 Rule #2)", Order = 2, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
+        public bool BlockCeilingActiveAboveVAH { get; set; }
 
         // ==============================================================================
         // 03d: VALUE AREA FILTER
