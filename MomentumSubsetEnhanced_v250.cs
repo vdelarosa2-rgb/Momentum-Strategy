@@ -1493,8 +1493,31 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private AdaptiveRuleProfile GetAdaptiveRuleProfileShort(AdaptiveContextFamily family, bool disableBarVolumeDependentFilters)
         {
-            var profile = GetAdaptiveRuleProfile(family, disableBarVolumeDependentFilters);
-            return profile;
+            // Map short-side families to their long-side counterparts for profile lookup
+            // The user will calibrate these separately via backtesting
+            AdaptiveContextFamily mappedFamily;
+            switch (family)
+            {
+                case AdaptiveContextFamily.CeilingValueReject:
+                    mappedFamily = AdaptiveContextFamily.BasementValueReclaim;
+                    break;
+                case AdaptiveContextFamily.AboveValueReversal:
+                    mappedFamily = AdaptiveContextFamily.BelowValueReversal;
+                    break;
+                case AdaptiveContextFamily.WithGrainShortContinuation:
+                    mappedFamily = AdaptiveContextFamily.WithGrainContinuation;
+                    break;
+                case AdaptiveContextFamily.LowerValueFriction:
+                    mappedFamily = AdaptiveContextFamily.UpperValueFriction;
+                    break;
+                case AdaptiveContextFamily.BasementBreakdown:
+                    mappedFamily = AdaptiveContextFamily.CeilingBreakout;
+                    break;
+                default:
+                    mappedFamily = family;
+                    break;
+            }
+            return GetAdaptiveRuleProfile(mappedFamily, disableBarVolumeDependentFilters);
         }
 
         private AdaptiveRuleProfile GetAdaptiveRuleProfile(AdaptiveContextFamily family, bool disableBarVolumeDependentFilters)
