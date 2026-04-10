@@ -116,6 +116,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         Normal,
         Thin
     }
+
+    public enum SetupType
+    {
+        None,
+        BreakoutContinuationLong,
+        FailedBreakoutReversalLong
+    }
     #endregion
 
     public class MomentumSubsetEnhanced : Strategy
@@ -301,9 +308,23 @@ namespace NinjaTrader.NinjaScript.Strategies
             public double CeilingTrapAbsorptionPct;
         }
 
+        private struct SetupSignal
+        {
+            public SetupType SetupType;
+            public bool IsValid;
+            public string Reason;
+            public string ContextFamily;
+            public string NearestLevel;
+            public double SignalPrice;
+            public double StopReferencePrice;
+            public double TargetReferencePrice;
+        }
+
         // Entry-time telemetry snapshot
         private string lastEntryContext = "";
         private string lastEntryVolRegime = "";
+        private string lastEntrySetupType = "NONE";
+        private string lastEntrySetupReason = "";
         private double lastEntryStackRecency = 0;
         private double lastEntrySessionPos = 0;
         private double lastEntryVolZScore = 0;
@@ -1591,6 +1612,29 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
+        private bool IsContinuationSetupFamily(AdaptiveContextFamily family)
+        {
+            return family == AdaptiveContextFamily.WithGrainContinuation
+                || family == AdaptiveContextFamily.CeilingBreakout
+                || family == AdaptiveContextFamily.UpperValueFriction;
+        }
+
+        private bool IsReversalSetupFamily(AdaptiveContextFamily family)
+        {
+            return family == AdaptiveContextFamily.BasementValueReclaim
+                || family == AdaptiveContextFamily.BelowValueReversal;
+        }
+
+        private string GetSetupTypeString(SetupType setupType)
+        {
+            switch (setupType)
+            {
+                case SetupType.BreakoutContinuationLong: return "BREAKOUT-CONT-LONG";
+                case SetupType.FailedBreakoutReversalLong: return "FAILED-BO-REV-LONG";
+                default: return "NONE";
+            }
+        }
+
         private AdaptiveRuleProfile GetAdaptiveRuleProfile(AdaptiveContextFamily family, bool disableBarVolumeDependentFilters)
         {
             AdaptiveRuleProfile profile = new AdaptiveRuleProfile();
@@ -2400,6 +2444,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private bool CanSubmitLongEntry(DateTime currentTime)
         {
+            if (!AllowLongTrades)
+                return false;
+
             if (Position.MarketPosition != MarketPosition.Flat)
                 return false;
 
@@ -2413,6 +2460,130 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return false;
 
             return true;
+        }
+
+        private SetupSignal EvaluateBreakoutContinuationLong(
+            bool baseLongValid,
+            AdaptiveContextFamily adaptiveContextFamily,
+            string nearestKeyLevel,
+            double signalPrice,
+            bool improvingDeltaLong,
+            double domVolLongPercent,
+            double validBullishRatio,
+            double escapeLongTicks,
+            bool activeAnchorReclaimed,
+            double activeAvwapSlopeDownTicks)
+        {
+            SetupSignal signal = new SetupSignal();
+            signal.SetupType = SetupType.BreakoutContinuationLong;
+            signal.ContextFamily = GetAdaptiveContextFamilyString(adaptiveContextFamily);
+            signal.NearestLevel = nearestKeyLevel;
+            signal.SignalPrice = signalPrice;
+            signal.StopReferencePrice = double.NaN;
+            signal.TargetReferencePrice = double.NaN;
+
+            bool continuationFamily = IsContinuationSetupFamily(adaptiveContextFamily);
+            bool reversalFamily = IsReversalSetupFamily(adaptiveContextFamily);
+            bool deltaStructurePass = improvingDeltaLong || domVolLongPercent >= 50.0 || validBullishRatio >= ImbalanceRatio;
+            bool antiChasePass = !UseMaxEscapeGlobal || escapeLongTicks <= MaxEscapeGlobalTicks;
+            bool avwapAcceptancePass = !UseVwapAcceptanceFilter || activeAnchorReclaimed;
+            bool avwapSlopePass = !UseAvwapSlopeFilter || activeAvwapSlopeDownTicks < AvwapSlopeVetoTicks;
+
+            signal.IsValid = baseLongValid
+                && (continuationFamily || !reversalFamily)
+                && deltaStructurePass
+                && antiChasePass
+                && avwapAcceptancePass
+                && avwapSlopePass;
+
+            signal.Reason = string.Format(
+                "family={0} | deltaStruct={1} | antiChase={2} | avwapAccept={3} | avwapSlope={4}",
+                signal.ContextFamily, deltaStructurePass, antiChasePass, avwapAcceptancePass, avwapSlopePass);
+
+            return signal;
+        }
+
+        private SetupSignal EvaluateFailedBreakoutReversalLong(
+            bool baseLongValid,
+            AdaptiveContextFamily adaptiveContextFamily,
+            SessionLocationBucket sessionBucket,
+            string nearestKeyLevel,
+            double signalPrice,
+            bool keyLevelGatePass,
+            bool nearVWAP,
+            bool nearPDL,
+            bool nearIBL,
+            bool nearPML,
+            bool nearPOC,
+            bool improvingDeltaLong,
+            bool divLong,
+            bool revUp,
+            bool activeAnchorReclaimed,
+            int pocBarsProcessed,
+            double pMig1,
+            double s3AbsPct,
+            bool isClimax,
+            bool isExhaustion)
+        {
+            SetupSignal signal = new SetupSignal();
+            signal.SetupType = SetupType.FailedBreakoutReversalLong;
+            signal.ContextFamily = GetAdaptiveContextFamilyString(adaptiveContextFamily);
+            signal.NearestLevel = nearestKeyLevel;
+            signal.SignalPrice = signalPrice;
+            signal.StopReferencePrice = double.NaN;
+            signal.TargetReferencePrice = double.NaN;
+
+            bool reversalFamily = IsReversalSetupFamily(adaptiveContextFamily)
+                || sessionBucket == SessionLocationBucket.Basement
+                || sessionBucket == SessionLocationBucket.Lower;
+            bool keyLevelSupport = keyLevelGatePass || nearVWAP || nearPDL || nearIBL || nearPML || nearPOC;
+            bool absorptionProof = (S3_UseAbsorption && s3AbsPct >= S3_MinAbsorptionPct) || isClimax || isExhaustion;
+            bool reclaimOrMigration = activeAnchorReclaimed || (pocBarsProcessed >= 2 && pMig1 > 0) || revUp;
+            bool reversalProof = improvingDeltaLong || divLong || absorptionProof || reclaimOrMigration;
+
+            signal.IsValid = baseLongValid
+                && reversalFamily
+                && keyLevelSupport
+                && reversalProof;
+
+            signal.Reason = string.Format(
+                "family={0} | keyLvl={1} | absorption={2} | reclaimOrPoc={3} | reversalProof={4}",
+                signal.ContextFamily, keyLevelSupport, absorptionProof, reclaimOrMigration, reversalProof);
+
+            return signal;
+        }
+
+        private SetupSignal SelectPreferredLongSetup(SetupSignal continuationSignal, SetupSignal reversalSignal, SessionLocationBucket sessionBucket, bool baseLongValid)
+        {
+            bool basementOrLower = sessionBucket == SessionLocationBucket.Basement || sessionBucket == SessionLocationBucket.Lower;
+
+            if (reversalSignal.IsValid && continuationSignal.IsValid)
+                return basementOrLower ? reversalSignal : continuationSignal;
+
+            if (reversalSignal.IsValid)
+                return reversalSignal;
+
+            if (continuationSignal.IsValid)
+                return continuationSignal;
+
+            if (baseLongValid)
+            {
+                continuationSignal.IsValid = true;
+                continuationSignal.SetupType = SetupType.BreakoutContinuationLong;
+                continuationSignal.Reason = "Fallback: base long engine valid, setup families not decisive";
+                return continuationSignal;
+            }
+
+            SetupSignal noneSignal = new SetupSignal();
+            noneSignal.SetupType = SetupType.None;
+            noneSignal.IsValid = false;
+            noneSignal.Reason = "No valid long setup";
+            noneSignal.ContextFamily = "";
+            noneSignal.NearestLevel = "";
+            noneSignal.SignalPrice = double.NaN;
+            noneSignal.StopReferencePrice = double.NaN;
+            noneSignal.TargetReferencePrice = double.NaN;
+            return noneSignal;
         }
 
         private void PruneRecentBullStacks()
@@ -2685,8 +2856,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print(string.Format("TRADE LOG | RESULT: {0} ({1} Ticks / ${2:F2}) | MAE: {3} Ticks | MFE: {4} Ticks | ENTRY: {5}", 
                 rOut, Math.Round(pTicks), pDollars, Math.Round(mTicks), Math.Round(fTicks), pendingTradeLog));
 
-            Print(string.Format("     [ENTRY-SNAPSHOT] Context: {0} | SessionAxis: {1} | VolRegime: {2} | Recency: {3:F2} | SessPos: {4:F2} | VolZ: {5:F2} | Cluster: {6}",
-                lastEntryContext, lastEntrySessionAxis, lastEntryVolRegime, lastEntryStackRecency, lastEntrySessionPos, lastEntryVolZScore, lastEntryClusterCount));
+            Print(string.Format("     [ENTRY-SNAPSHOT] Setup: {0} | SetupReason: {1} | Context: {2} | SessionAxis: {3} | VolRegime: {4} | Recency: {5:F2} | SessPos: {6:F2} | VolZ: {7:F2} | Cluster: {8}",
+                lastEntrySetupType, lastEntrySetupReason, lastEntryContext, lastEntrySessionAxis, lastEntryVolRegime, lastEntryStackRecency, lastEntrySessionPos, lastEntryVolZScore, lastEntryClusterCount));
 
             Print(string.Format("     [LOCATION-RAW] SigPx: {0:F2} | SessLow: {1:F2} ({2}) | SessMid: {3:F2} ({4}) | SessHigh: {5:F2} ({6}) | Bucket: {7} | SessionCtx: {8} | VAContext: {9} | Pair: {10}",
                 lastEntrySignalPrice,
@@ -4427,195 +4598,227 @@ namespace NinjaTrader.NinjaScript.Strategies
                 s3_long_valid = preMatrixPass;
             }
 
-            bool cooldownOkEval = CooldownWindowComplete(Time[0]);
-            bool validLongSignal = s3_long_valid && cooldownOkEval;
+            bool sharedLongGuardsPass = CanSubmitLongEntry(Time[0]);
+            SetupSignal continuationLongSignal = EvaluateBreakoutContinuationLong(
+                s3_long_valid,
+                adaptiveContextFamily,
+                nearestKeyLevel,
+                Close[1],
+                improvingDeltaLong,
+                domVolLongPercent,
+                validBullishRatio,
+                escapeLongTicks,
+                activeAnchorReclaimed,
+                activeAvwapSlopeDownTicks);
+            SetupSignal reversalLongSignal = EvaluateFailedBreakoutReversalLong(
+                s3_long_valid,
+                adaptiveContextFamily,
+                sessionBucket,
+                nearestKeyLevel,
+                Close[1],
+                keyLevelGatePass,
+                nearVWAP,
+                nearPDL,
+                nearIBL,
+                nearPML,
+                nearPOC,
+                improvingDeltaLong,
+                divLong,
+                revUp,
+                activeAnchorReclaimed,
+                pocBarsProcessed,
+                pMig1,
+                s3_absPct,
+                isClimax,
+                isExhaustion);
+            SetupSignal chosenLongSignal = SelectPreferredLongSetup(continuationLongSignal, reversalLongSignal, sessionBucket, s3_long_valid);
             #endregion
 
             #region Entry Execution
-            if (Position.MarketPosition == MarketPosition.Flat)
+            if (sharedLongGuardsPass && chosenLongSignal.IsValid)
             {
-                if (AllowLongTrades && validLongSignal)
+                // Capture Entry Snapshot - Existing Fields
+                lastEntryContext = stackContextLong;
+                lastEntryVolRegime = volRegime;
+                lastEntrySetupType = GetSetupTypeString(chosenLongSignal.SetupType);
+                lastEntrySetupReason = chosenLongSignal.Reason;
+                lastEntryStackRecency = stackRecencyLong;
+                lastEntrySessionPos = sessionPosLong;
+                lastEntryVolZScore = volZScore;
+                lastEntryAdaptiveMinVol = adaptiveMinVol;
+                lastEntryAdaptiveMaxVol = adaptiveMaxVol;
+                lastEntryTimeBaseline = timeBaseline;
+                lastEntryFollowThroughRate = ftRate;
+                lastEntryAvgMfe = ftAvgMfe;
+                lastEntryClusterCount = bullClusterCount;
+
+                lastEntryAdaptiveVolBase = adaptiveVolumeBaseline;
+                lastEntryAdaptiveVolStdDev = adaptiveVolumeStdDev;
+                lastEntryTotalBarVol = totalBarVol;
+                lastEntryVolumeSpikeRatio = currentVolSpikeRatio;
+                lastEntryTimeAdjMinVol = timeAdjustedMinVol;
+                lastEntryFtSampleCount = ftSampleCount;
+                lastEntryFtAvgMae = ftAvgMae;
+                lastEntryNetCnt = cAdvLong;
+                lastEntryRegimeAllowed = regimeAllowed;
+                lastEntryBaseStackPass = baseStackValid;
+                lastEntryPreMatrixPass = preMatrixPass;
+                lastEntryMatrixVerdict = matrixVerdict;
+
+                lastEntryBarDelta = barDelta;
+                lastEntryNormDeltaPct = normDeltaPct;
+                lastEntryBarDir = barDir;
+                lastEntryPrevBarDelta1 = prevBarDelta1;
+                lastEntryPrevBarDelta2 = prevBarDelta2;
+                lastEntryImprovingDelta = improvingDeltaLong;
+                lastEntryDivLong = divLong;
+                lastEntryPocMig1 = pMig1 / TickSize;
+                lastEntryRevUp = revUp;
+                lastEntryCurrentPoc = currentPocPrice;
+                lastEntryPrevPoc1 = prevPoc1;
+                lastEntryPrevPoc2 = prevPoc2;
+
+                lastEntryVolRegimeGateAllowed = volRegimeGateAllowed;
+
+                // Microstructure regime telemetry
+                lastEntryRollingR1k = rollingR1k;
+                lastEntryMicroRegime = GetMicroRegimeString(currentMicroRegime);
+
+                // Session context & signal quality gate telemetry
+                lastEntrySessionContextGateAllowed = IsSessionContextAllowed(stackContextEnum);
+                lastEntryMinSecsPass = passMinBarSecs;
+                lastEntryMaxEscapeGlobalPass = passMaxEscapeGlobal;
+
+                lastEntryBarIsClimax = isClimax;
+                lastEntryBarIsExhaustion = isExhaustion;
+                lastEntryPrevBarWasClimax = prevBarClimaxState;
+                lastEntryClimaxScore = climaxScore;
+                lastEntryExhaustionScore = exhaustionScore;
+                lastEntryClimaxPrevVol = priorBarVolumeForTelemetry;
+                lastEntryClimaxCurVol = totalBarVol;
+                lastEntryPassClimaxFilter = passClimaxFilter;
+                lastEntryPassExhaustionFilter = !UseExhaustionFilter || isExhaustion || !RequireExhaustionSetup;
+
+                lastEntryVAH = nyseSessionVAH;
+                lastEntryVAL = nyseSessionVAL;
+                lastEntrySessionPOCVA = nyseSessionPOC;
+                lastEntryVAContext = vaContextStr;
+                lastEntryPriceDistToPOC = priceDistToPOC;
+                lastEntryPassVAFilter = passVAFilter;
+
+                lastEntryDeltaROC = currentDeltaROC;
+                lastEntryDeltaAccel = currentDeltaAccel;
+                lastEntryDeltaVelocityScore = deltaVelocityScore;
+                lastEntryDeltaMomentum = GetDeltaMomentumString(currentDeltaMomentum);
+                lastEntryPassDeltaVelocityFilter = passDeltaVelocityFilter;
+
+                // Tier A Snapshot Data
+                lastEntryOlderSlope = s3_olderSlope;
+                lastEntrySlopeAccel = s3_slopeAccel;
+                lastEntryPassCdAccel = !S3_UseCdSlopeAccel || (s3_slopeAccel >= S3_MinCdSlopeAccel);
+
+                lastEntryPassDeltaDiv = !S3_UseDeltaDivergence || (S3_RequireDeceleration ? lastEntryImprovingDelta : lastEntryDivLong);
+
+                lastEntryLowZoneVol = s3_lowZoneVol;
+                lastEntryLowBid = s3_lowBid;
+                lastEntryLowAsk = s3_lowAsk;
+                lastEntryAbsPct = (totalBarVol > 0) ? (s3_lowZoneVol / totalBarVol) * 100.0 : 0;
+                lastEntryAbsMult = s3_lowBid / Math.Max(1.0, avgVolPerTick);
+
+                lastEntryPassAbsorb = !S3_UseAbsorption ||
+                                      ((lastEntryAbsPct >= S3_MinAbsorptionPct) &&
+                                       (!S3_UseMaxAbsorption || lastEntryAbsPct <= S3_MaxAbsorptionPct) &&
+                                       (lastEntryAbsMult >= S3_MinAbsorptionMultiple));
+
+                lastEntryPassPocMig = !S3_UsePocMigration || ((pocBarsProcessed >= 2) && (!S3_RequirePocReversal || lastEntryRevUp) && (lastEntryPocMig1 >= S3_MinPocMigrationTicks));
+
+                lastEntryAdaptiveFamily = GetAdaptiveContextFamilyString(adaptiveContextFamily);
+                lastEntryAdaptiveRuleSummary = adaptiveRuleSummary;
+                lastEntryMatrixProofState = matrixProofState;
+                lastEntryMatrixBlockReason = matrixBlockReason;
+                lastEntryConstantVolumeMode = constantVolumeBarMode;
+                lastEntryDisableBarVolumeFilters = disableBarVolumeDependentFilters;
+                lastEntrySessionAxis = sessionBucketStr;
+                lastEntrySpatialPair = spatialPairStr;
+
+                lastEntrySignalPrice = chosenLongSignal.SignalPrice;
+                lastEntrySessionHigh = sessionHigh;
+                lastEntrySessionLow = sessionLow;
+                lastEntrySessionMid = signalSessionMid;
+                lastEntrySignalBarRangeTicks = signalBarRangeTicks;
+                lastEntrySignalBarSecs = signalBarSecs;
+                lastEntryRangePer1kVolumeTicks = rangePer1kVolumeTicks;
+                lastEntryDeltaPerTick = deltaPerTick;
+                lastEntryDeltaPctOfVolume = deltaPctOfVolume;
+                lastEntryImbalanceDensity = imbalanceDensity;
+                lastEntryPocVolPct = pocVolPct;
+                lastEntryMaxVolAtPrice = maxVolAtPrice;
+                lastEntryUpperZoneVol = s3_highZoneVol;
+                lastEntryUpperZonePct = highZonePct;
+                lastEntryLowZonePct = lowZonePct;
+                lastEntryBullishImbalanceCount = bullishImbalanceCount;
+                lastEntryBearishImbalanceCount = bearishImbalanceCount;
+                lastEntryMaxBullishStack = maxBullishStack;
+                lastEntryMaxBearishStack = maxBearishStack;
+                lastEntryEscapeTicks = escapeLongTicks;
+                lastEntryDomVolPercent = domVolLongPercent;
+                lastEntryValidBullishRatio = validBullishRatio == double.MaxValue ? 999.0 : validBullishRatio;
+                lastEntryPocPosition = pocPosition;
+                lastEntryRangeBarMode = rangeBarMode;
+                lastEntryRangeClosePos = signalClosePosPct;
+                lastEntryRangeBodyPct = signalBodyPct;
+                lastEntryRangeOverlapPct = signalOverlapPct;
+                lastEntryRangeLowerWickPct = signalLowerWickPct;
+                lastEntryRangeUpperWickPct = signalUpperWickPct;
+                lastEntryPriceToSessionLowTicks = priceToSessionLowTicks;
+                lastEntryPriceToSessionHighTicks = priceToSessionHighTicks;
+                lastEntryPriceToSessionMidTicks = priceToSessionMidTicks;
+                lastEntryPriceToVALTicks = priceToVALTicks;
+                lastEntryPriceToVAHTicks = priceToVAHTicks;
+                lastEntryPriceToPOCSignedTicks = priceToPOCSignedTicks;
+                lastEntryKeyLevelSummary = keyLevelSummary;
+                lastEntryNearestKeyLevel = nearestKeyLevel;
+                lastEntryNearestKeyLevelDistTicks = nearestKeyLevelAbsTicks == double.MaxValue ? 0 : nearestKeyLevelAbsTicks;
+                lastEntryNearVWAP = nearVWAP;
+                lastEntryNearPDH = nearPDH;
+                lastEntryNearPDL = nearPDL;
+                lastEntryNearIBH = nearIBH;
+                lastEntryNearIBL = nearIBL;
+                lastEntryNearPMH = nearPMH;
+                lastEntryNearPML = nearPML;
+                lastEntryNearPOC = nearPOC;
+                lastEntryKeyLevelGatePass = keyLevelGatePass;
+
+                // Build Trade Log
+                string localTradeLog = "";
+                if (UseTradeLogging)
                 {
-                    // Capture Entry Snapshot - Existing Fields
-                    lastEntryContext = stackContextLong;
-                    lastEntryVolRegime = volRegime;
-                    lastEntryStackRecency = stackRecencyLong;
-                    lastEntrySessionPos = sessionPosLong;
-                    lastEntryVolZScore = volZScore;
-                    lastEntryAdaptiveMinVol = adaptiveMinVol;
-                    lastEntryAdaptiveMaxVol = adaptiveMaxVol;
-                    lastEntryTimeBaseline = timeBaseline;
-                    lastEntryFollowThroughRate = ftRate;
-                    lastEntryAvgMfe = ftAvgMfe;
-                    lastEntryClusterCount = bullClusterCount;
+                    string tierName = "TIER A";
+                    double loggedCdSlope = cdSlopeLog_S3_Long;
+                    double logRatioLong = validBullishRatio == double.MaxValue ? 999.0 : validBullishRatio;
 
-                    lastEntryAdaptiveVolBase = adaptiveVolumeBaseline;
-                    lastEntryAdaptiveVolStdDev = adaptiveVolumeStdDev;
-                    lastEntryTotalBarVol = totalBarVol;
-                    lastEntryVolumeSpikeRatio = currentVolSpikeRatio;
-                    lastEntryTimeAdjMinVol = timeAdjustedMinVol;
-                    lastEntryFtSampleCount = ftSampleCount;
-                    lastEntryFtAvgMae = ftAvgMae;
-                    lastEntryNetCnt = cAdvLong;
-                    lastEntryRegimeAllowed = regimeAllowed;
-                    lastEntryBaseStackPass = baseStackValid;
-                    lastEntryPreMatrixPass = preMatrixPass;
-                    lastEntryMatrixVerdict = matrixVerdict;
+                    var logSb = new StringBuilder();
+                    logSb.AppendFormat("SigBar: {0} | Entry: {{ENTRY_TIME}} | LONG ({1}) | Setup: {2} | SetupReason: {3} | SigPx: {4} | Dir: {5} | ",
+                        Time[1].ToString("yyyy-MM-dd HH:mm:ss"), tierName, lastEntrySetupType, lastEntrySetupReason, chosenLongSignal.SignalPrice, barDir);
+                    logSb.AppendFormat("BarDelta: {0:F0} | Stack: {1} (Pos: {2:F2} | Ratio: {3:F1} | OppStack: {4}) | ",
+                        barDelta, maxBullishStack, stackPosLong, logRatioLong, maxBearishStack);
+                    logSb.AppendFormat("ImbVol: {0:F1} | Vol: {1} | POC: {2:F2} (PocVol: {3:F0} / {4:F1}%) | ",
+                        validAvgBullishImbVol, totalBarVol, pocPosition, maxVolAtPrice, pocVolPct);
+                    logSb.AppendFormat("CvdState: {0} (Allowed: {1}) | ImbCount: [{2}B/{3}S/NetCnt: {4}/NetD: {5:+0;-0;0}] | Escape: {6:F0}T | ",
+                        stateNameStr, regimeAllowed, bullishImbalanceCount, bearishImbalanceCount, cAdvLong, dAdvLong, escapeLongTicks);
+                    logSb.AppendFormat("DomVol: {0:F1}% | CD Slope: {1:F2}% | CtxFam: {2} | Pair: {3} | KeyLvl: {4} | SigRange: {5:F1}T | SigSecs: {6:F2} | R1k: {7:F1}T | D/V: {8:F1}%",
+                        domVolLongPercent, loggedCdSlope, GetAdaptiveContextFamilyString(adaptiveContextFamily), spatialPairStr, nearestKeyLevel, signalBarRangeTicks, signalBarSecs, rangePer1kVolumeTicks, deltaPctOfVolume);
 
-                    lastEntryBarDelta = barDelta;
-                    lastEntryNormDeltaPct = normDeltaPct;
-                    lastEntryBarDir = barDir;
-                    lastEntryPrevBarDelta1 = prevBarDelta1;
-                    lastEntryPrevBarDelta2 = prevBarDelta2;
-                    lastEntryImprovingDelta = improvingDeltaLong;
-                    lastEntryDivLong = divLong;
-                    lastEntryPocMig1 = pMig1 / TickSize;
-                    lastEntryRevUp = revUp;
-                    lastEntryCurrentPoc = currentPocPrice;
-                    lastEntryPrevPoc1 = prevPoc1;
-                    lastEntryPrevPoc2 = prevPoc2;
+                    localTradeLog = logSb.ToString();
+                }
 
-                    lastEntryVolRegimeGateAllowed = volRegimeGateAllowed;
-
-                    // Microstructure regime telemetry
-                    lastEntryRollingR1k = rollingR1k;
-                    lastEntryMicroRegime = GetMicroRegimeString(currentMicroRegime);
-
-                    // Session context & signal quality gate telemetry
-                    lastEntrySessionContextGateAllowed = IsSessionContextAllowed(stackContextEnum);
-                    lastEntryMinSecsPass = passMinBarSecs;
-                    lastEntryMaxEscapeGlobalPass = passMaxEscapeGlobal;
-
-                    lastEntryBarIsClimax = isClimax;
-                    lastEntryBarIsExhaustion = isExhaustion;
-                    lastEntryPrevBarWasClimax = prevBarClimaxState;
-                    lastEntryClimaxScore = climaxScore;
-                    lastEntryExhaustionScore = exhaustionScore;
-                    lastEntryClimaxPrevVol = priorBarVolumeForTelemetry;
-                    lastEntryClimaxCurVol = totalBarVol;
-                    lastEntryPassClimaxFilter = passClimaxFilter;
-                    lastEntryPassExhaustionFilter = !UseExhaustionFilter || isExhaustion || !RequireExhaustionSetup;
-
-                    lastEntryVAH = nyseSessionVAH;
-                    lastEntryVAL = nyseSessionVAL;
-                    lastEntrySessionPOCVA = nyseSessionPOC;
-                    lastEntryVAContext = vaContextStr;
-                    lastEntryPriceDistToPOC = priceDistToPOC;
-                    lastEntryPassVAFilter = passVAFilter;
-
-                    lastEntryDeltaROC = currentDeltaROC;
-                    lastEntryDeltaAccel = currentDeltaAccel;
-                    lastEntryDeltaVelocityScore = deltaVelocityScore;
-                    lastEntryDeltaMomentum = GetDeltaMomentumString(currentDeltaMomentum);
-                    lastEntryPassDeltaVelocityFilter = passDeltaVelocityFilter;
-
-                    // Tier A Snapshot Data
-                    lastEntryOlderSlope = s3_olderSlope;
-                    lastEntrySlopeAccel = s3_slopeAccel;
-                    lastEntryPassCdAccel = !S3_UseCdSlopeAccel || (s3_slopeAccel >= S3_MinCdSlopeAccel);
-
-                    lastEntryPassDeltaDiv = !S3_UseDeltaDivergence || (S3_RequireDeceleration ? lastEntryImprovingDelta : lastEntryDivLong);
-
-                    lastEntryLowZoneVol = s3_lowZoneVol;
-                    lastEntryLowBid = s3_lowBid;
-                    lastEntryLowAsk = s3_lowAsk;
-                    lastEntryAbsPct = (totalBarVol > 0) ? (s3_lowZoneVol / totalBarVol) * 100.0 : 0;
-                    lastEntryAbsMult = s3_lowBid / Math.Max(1.0, avgVolPerTick);
+                pendingTradeLog = localTradeLog.Replace("{ENTRY_TIME}", Time[0].ToString("yyyy-MM-dd HH:mm:ss"));
                     
-                    lastEntryPassAbsorb = !S3_UseAbsorption || 
-                                          ((lastEntryAbsPct >= S3_MinAbsorptionPct) && 
-                                           (!S3_UseMaxAbsorption || lastEntryAbsPct <= S3_MaxAbsorptionPct) && 
-                                           (lastEntryAbsMult >= S3_MinAbsorptionMultiple));
-
-                    lastEntryPassPocMig = !S3_UsePocMigration || ((pocBarsProcessed >= 2) && (!S3_RequirePocReversal || lastEntryRevUp) && (lastEntryPocMig1 >= S3_MinPocMigrationTicks));
-
-                    lastEntryAdaptiveFamily = GetAdaptiveContextFamilyString(adaptiveContextFamily);
-                    lastEntryAdaptiveRuleSummary = adaptiveRuleSummary;
-                    lastEntryMatrixProofState = matrixProofState;
-                    lastEntryMatrixBlockReason = matrixBlockReason;
-                    lastEntryConstantVolumeMode = constantVolumeBarMode;
-                    lastEntryDisableBarVolumeFilters = disableBarVolumeDependentFilters;
-                    lastEntrySessionAxis = sessionBucketStr;
-                    lastEntrySpatialPair = spatialPairStr;
-
-                    lastEntrySignalPrice = Close[1];
-                    lastEntrySessionHigh = sessionHigh;
-                    lastEntrySessionLow = sessionLow;
-                    lastEntrySessionMid = signalSessionMid;
-                    lastEntrySignalBarRangeTicks = signalBarRangeTicks;
-                    lastEntrySignalBarSecs = signalBarSecs;
-                    lastEntryRangePer1kVolumeTicks = rangePer1kVolumeTicks;
-                    lastEntryDeltaPerTick = deltaPerTick;
-                    lastEntryDeltaPctOfVolume = deltaPctOfVolume;
-                    lastEntryImbalanceDensity = imbalanceDensity;
-                    lastEntryPocVolPct = pocVolPct;
-                    lastEntryMaxVolAtPrice = maxVolAtPrice;
-                    lastEntryUpperZoneVol = s3_highZoneVol;
-                    lastEntryUpperZonePct = highZonePct;
-                    lastEntryLowZonePct = lowZonePct;
-                    lastEntryBullishImbalanceCount = bullishImbalanceCount;
-                    lastEntryBearishImbalanceCount = bearishImbalanceCount;
-                    lastEntryMaxBullishStack = maxBullishStack;
-                    lastEntryMaxBearishStack = maxBearishStack;
-                    lastEntryEscapeTicks = escapeLongTicks;
-                    lastEntryDomVolPercent = domVolLongPercent;
-                    lastEntryValidBullishRatio = validBullishRatio == double.MaxValue ? 999.0 : validBullishRatio;
-                    lastEntryPocPosition = pocPosition;
-                    lastEntryRangeBarMode = rangeBarMode;
-                    lastEntryRangeClosePos = signalClosePosPct;
-                    lastEntryRangeBodyPct = signalBodyPct;
-                    lastEntryRangeOverlapPct = signalOverlapPct;
-                    lastEntryRangeLowerWickPct = signalLowerWickPct;
-                    lastEntryRangeUpperWickPct = signalUpperWickPct;
-                    lastEntryPriceToSessionLowTicks = priceToSessionLowTicks;
-                    lastEntryPriceToSessionHighTicks = priceToSessionHighTicks;
-                    lastEntryPriceToSessionMidTicks = priceToSessionMidTicks;
-                    lastEntryPriceToVALTicks = priceToVALTicks;
-                    lastEntryPriceToVAHTicks = priceToVAHTicks;
-                    lastEntryPriceToPOCSignedTicks = priceToPOCSignedTicks;
-                    lastEntryKeyLevelSummary = keyLevelSummary;
-                    lastEntryNearestKeyLevel = nearestKeyLevel;
-                    lastEntryNearestKeyLevelDistTicks = nearestKeyLevelAbsTicks == double.MaxValue ? 0 : nearestKeyLevelAbsTicks;
-                    lastEntryNearVWAP = nearVWAP;
-                    lastEntryNearPDH = nearPDH;
-                    lastEntryNearPDL = nearPDL;
-                    lastEntryNearIBH = nearIBH;
-                    lastEntryNearIBL = nearIBL;
-                    lastEntryNearPMH = nearPMH;
-                    lastEntryNearPML = nearPML;
-                    lastEntryNearPOC = nearPOC;
-                    lastEntryKeyLevelGatePass = keyLevelGatePass;
-
-                    // Build Trade Log
-                    string localTradeLog = "";
-                    if (UseTradeLogging)
-                    {
-                        string tierName = "TIER A";
-                        double loggedCdSlope = cdSlopeLog_S3_Long;
-                        double logRatioLong = validBullishRatio == double.MaxValue ? 999.0 : validBullishRatio;
-
-                        var logSb = new StringBuilder();
-                        logSb.AppendFormat("SigBar: {0} | Entry: {{ENTRY_TIME}} | LONG ({1}) | SigPx: {2} | Dir: {3} | ",
-                            Time[1].ToString("yyyy-MM-dd HH:mm:ss"), tierName, Close[1], barDir);
-                        logSb.AppendFormat("BarDelta: {0:F0} | Stack: {1} (Pos: {2:F2} | Ratio: {3:F1} | OppStack: {4}) | ",
-                            barDelta, maxBullishStack, stackPosLong, logRatioLong, maxBearishStack);
-                        logSb.AppendFormat("ImbVol: {0:F1} | Vol: {1} | POC: {2:F2} (PocVol: {3:F0} / {4:F1}%) | ",
-                            validAvgBullishImbVol, totalBarVol, pocPosition, maxVolAtPrice, pocVolPct);
-                        logSb.AppendFormat("CvdState: {0} (Allowed: {1}) | ImbCount: [{2}B/{3}S/NetCnt: {4}/NetD: {5:+0;-0;0}] | Escape: {6:F0}T | ",
-                            stateNameStr, regimeAllowed, bullishImbalanceCount, bearishImbalanceCount, cAdvLong, dAdvLong, escapeLongTicks);
-                        logSb.AppendFormat("DomVol: {0:F1}% | CD Slope: {1:F2}% | CtxFam: {2} | Pair: {3} | KeyLvl: {4} | SigRange: {5:F1}T | SigSecs: {6:F2} | R1k: {7:F1}T | D/V: {8:F1}%",
-                            domVolLongPercent, loggedCdSlope, GetAdaptiveContextFamilyString(adaptiveContextFamily), spatialPairStr, nearestKeyLevel, signalBarRangeTicks, signalBarSecs, rangePer1kVolumeTicks, deltaPctOfVolume);
-
-                        localTradeLog = logSb.ToString();
-                    }
-
-                    pendingTradeLog = localTradeLog.Replace("{ENTRY_TIME}", Time[0].ToString("yyyy-MM-dd HH:mm:ss"));
-                    
-                    // Capture AVWAP snapshots for Telemetry logging
-                    CaptureAnchorAvwapTelemetry(
-                        vBarsType, rthOpenBarIdx, hasReclaimedOpenVwap,
-                        out lastEntryAvwapOpen, out lastEntryAvwapOpenHistorical, out lastEntryAvwapOpenSignalDistTicks,
-                        out lastEntryAvwapOpenSlopeDropTicks, out lastEntryAvwapOpenTier, out lastEntryAvwapOpenSlope, out lastEntryAvwapOpenReclaimed);
+                // Capture AVWAP snapshots for Telemetry logging
+                CaptureAnchorAvwapTelemetry(
+                    vBarsType, rthOpenBarIdx, hasReclaimedOpenVwap,
+                    out lastEntryAvwapOpen, out lastEntryAvwapOpenHistorical, out lastEntryAvwapOpenSignalDistTicks,
+                    out lastEntryAvwapOpenSlopeDropTicks, out lastEntryAvwapOpenTier, out lastEntryAvwapOpenSlope, out lastEntryAvwapOpenReclaimed);
 
                     CaptureAnchorAvwapTelemetry(
                         vBarsType, sessionHighBarIdx, hasReclaimedHighVwap,
