@@ -2739,14 +2739,23 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Print("     [SHADOW] Full Engine Verdict: " + ((lastEntryPreMatrixPass && lastEntryMatrixVerdict) ? "PASS" : "BLOCK"));
             }
 
-            Print(string.Format("     [ENTRY-ADAPTIVE] Vol: {0:F0} | Base: {1:F0} | StdDev: {2:F0} | PassRegime: {3} | Spike: {4:F2}x",
-                lastEntryTotalBarVol, lastEntryAdaptiveVolBase, lastEntryAdaptiveVolStdDev, passRegime, lastEntryVolumeSpikeRatio));
+            Print(string.Format("     [ENTRY-ADAPTIVE] Vol: {0:F0} | Base: {1:F0} {2} | StdDev: {3:F0} | PassRegime: {4} | Spike: {5:F2}x",
+                lastEntryTotalBarVol, lastEntryUsingRegimeBaseline ? lastEntryRegimeBaseline : lastEntryAdaptiveVolBase,
+                lastEntryUsingRegimeBaseline ? "(REGIME)" : "(GLOBAL)",
+                lastEntryUsingRegimeBaseline ? lastEntryRegimeStdDev : lastEntryAdaptiveVolStdDev,
+                passRegime, lastEntryVolumeSpikeRatio));
 
             Print(string.Format("     [ENTRY-FT] FTRate: {0:P0} | AvgMFE: {1:F1}T | AvgMAE: {2:F1}T | Samples: {3}",
                 lastEntryFollowThroughRate, lastEntryAvgMfe, lastEntryFtAvgMae, lastEntryFtSampleCount));
 
             Print(string.Format("     [VOL-REGIME] Regime: {0} | ZScore: {1:F2} | GateEnabled: {2} | GateAllowed: {3}",
                 lastEntryVolRegime, lastEntryVolZScore, UseVolatilityRegimeGate, lastEntryVolRegimeGateAllowed));
+
+            Print(string.Format("     [REGIME-BASELINE] Using: {0} | RegimeBase: {1:F0} | RegimeStdDev: {2:F0} | GlobalBase: {3:F0} | GlobalStdDev: {4:F0} | RegimeReady: {5}",
+                lastEntryUsingRegimeBaseline ? "REGIME" : "GLOBAL",
+                lastEntryRegimeBaseline, lastEntryRegimeStdDev,
+                lastEntryAdaptiveVolBase, lastEntryAdaptiveVolStdDev,
+                lastEntryUsingRegimeBaseline));
 
             Print(string.Format("     [REGIME] RollR1k={0:F1} | Regime={1} | Thresholds={2:F1}/{3:F1}",
                 lastEntryRollingR1k, lastEntryMicroRegime, RegimeDenseThreshold, RegimeThinThreshold));
@@ -3148,7 +3157,17 @@ namespace NinjaTrader.NinjaScript.Strategies
             #region Calculate Volatility Regime & Z-Score
             VolatilityRegime volRegimeEnum = GetVolatilityRegime(totalBarVol);
             string volRegime = GetVolatilityRegimeString(volRegimeEnum);
-            double volZScore = adaptiveReady ? GetZScore(totalBarVol, adaptiveVolumeBaseline, adaptiveVolumeStdDev) : 0;
+            double effectiveVolBaseline = adaptiveVolumeBaseline;
+            double effectiveVolStdDev = adaptiveVolumeStdDev;
+            bool usingRegimeBaseline = false;
+            if (UseRegimeSegmentedBaselines && regimeBufferReady.ContainsKey(volRegimeEnum) && regimeBufferReady[volRegimeEnum])
+            {
+                var regimeBaseline = GetRegimeBaseline(volRegimeEnum);
+                effectiveVolBaseline = regimeBaseline.mean;
+                effectiveVolStdDev = regimeBaseline.stdDev;
+                usingRegimeBaseline = true;
+            }
+            double volZScore = adaptiveReady ? GetZScore(totalBarVol, effectiveVolBaseline, effectiveVolStdDev) : 0;
             bool volRegimeGateAllowed = IsVolatilityRegimeAllowed(volRegimeEnum);
             #endregion
 
@@ -3950,19 +3969,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
 
                 // REGIME SEGMENTED BASELINES (03r) — telemetry
-                lastEntryUsingRegimeBaseline = false;
-                lastEntryRegimeBaseline = adaptiveVolumeBaseline;
-                lastEntryRegimeStdDev = adaptiveVolumeStdDev;
-                if (UseRegimeSegmentedBaselines)
-                {
-                    var regRB = GetRegimeBaseline(volRegimeEnum);
-                    if (regimeBufferReady.ContainsKey(volRegimeEnum) && regimeBufferReady[volRegimeEnum])
-                    {
-                        lastEntryRegimeBaseline = regRB.mean;
-                        lastEntryRegimeStdDev = regRB.stdDev;
-                        lastEntryUsingRegimeBaseline = true;
-                    }
-                }
+                lastEntryRegimeBaseline = effectiveVolBaseline;
+                lastEntryRegimeStdDev = effectiveVolStdDev;
+                lastEntryUsingRegimeBaseline = usingRegimeBaseline;
 
                 // STACK DELTA RATIO (03s)
                 double stackDeltaRatio = bullishImbalanceDeltaSum / Math.Max(1.0, Math.Abs(barDelta));
