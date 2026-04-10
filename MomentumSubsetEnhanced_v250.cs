@@ -2483,14 +2483,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             signal.TargetReferencePrice = double.NaN;
 
             bool continuationFamily = IsContinuationSetupFamily(adaptiveContextFamily);
-            bool reversalFamily = IsReversalSetupFamily(adaptiveContextFamily);
             bool deltaStructurePass = improvingDeltaLong || domVolLongPercent >= 50.0 || validBullishRatio >= ImbalanceRatio;
             bool antiChasePass = !UseMaxEscapeGlobal || escapeLongTicks <= MaxEscapeGlobalTicks;
             bool avwapAcceptancePass = !UseVwapAcceptanceFilter || activeAnchorReclaimed;
             bool avwapSlopePass = !UseAvwapSlopeFilter || activeAvwapSlopeDownTicks < AvwapSlopeVetoTicks;
 
             signal.IsValid = baseLongValid
-                && (continuationFamily || !reversalFamily)
+                && continuationFamily
                 && deltaStructurePass
                 && antiChasePass
                 && avwapAcceptancePass
@@ -2553,7 +2552,14 @@ namespace NinjaTrader.NinjaScript.Strategies
             return signal;
         }
 
-        private SetupSignal SelectPreferredLongSetup(SetupSignal continuationSignal, SetupSignal reversalSignal, SessionLocationBucket sessionBucket, bool baseLongValid)
+        private SetupSignal SelectPreferredLongSetup(
+            SetupSignal continuationSignal,
+            SetupSignal reversalSignal,
+            SessionLocationBucket sessionBucket,
+            bool baseLongValid,
+            AdaptiveContextFamily adaptiveContextFamily,
+            string nearestKeyLevel,
+            double signalPrice)
         {
             bool basementOrLower = sessionBucket == SessionLocationBucket.Basement || sessionBucket == SessionLocationBucket.Lower;
 
@@ -2568,10 +2574,16 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (baseLongValid)
             {
-                continuationSignal.IsValid = true;
-                continuationSignal.SetupType = SetupType.BreakoutContinuationLong;
-                continuationSignal.Reason = "Fallback: base long engine valid, setup families not decisive";
-                return continuationSignal;
+                SetupSignal fallbackSignal = new SetupSignal();
+                fallbackSignal.SetupType = SetupType.BreakoutContinuationLong;
+                fallbackSignal.IsValid = true;
+                fallbackSignal.Reason = "Fallback: base long valid but neither continuation nor reversal setup qualified";
+                fallbackSignal.ContextFamily = GetAdaptiveContextFamilyString(adaptiveContextFamily);
+                fallbackSignal.NearestLevel = nearestKeyLevel;
+                fallbackSignal.SignalPrice = signalPrice;
+                fallbackSignal.StopReferencePrice = double.NaN;
+                fallbackSignal.TargetReferencePrice = double.NaN;
+                return fallbackSignal;
             }
 
             SetupSignal noneSignal = new SetupSignal();
@@ -4631,7 +4643,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                 s3_absPct,
                 isClimax,
                 isExhaustion);
-            SetupSignal chosenLongSignal = SelectPreferredLongSetup(continuationLongSignal, reversalLongSignal, sessionBucket, s3_long_valid);
+            SetupSignal chosenLongSignal = SelectPreferredLongSetup(
+                continuationLongSignal,
+                reversalLongSignal,
+                sessionBucket,
+                s3_long_valid,
+                adaptiveContextFamily,
+                nearestKeyLevel,
+                Close[1]);
             #endregion
 
             #region Entry Execution
@@ -4796,10 +4815,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                     string tierName = "TIER A";
                     double loggedCdSlope = cdSlopeLog_S3_Long;
                     double logRatioLong = validBullishRatio == double.MaxValue ? 999.0 : validBullishRatio;
+                    string safeSetupReason = (lastEntrySetupReason ?? "").Replace("|", "/");
 
                     var logSb = new StringBuilder();
                     logSb.AppendFormat("SigBar: {0} | Entry: {{ENTRY_TIME}} | LONG ({1}) | Setup: {2} | SetupReason: {3} | SigPx: {4} | Dir: {5} | ",
-                        Time[1].ToString("yyyy-MM-dd HH:mm:ss"), tierName, lastEntrySetupType, lastEntrySetupReason, chosenLongSignal.SignalPrice, barDir);
+                        Time[1].ToString("yyyy-MM-dd HH:mm:ss"), tierName, lastEntrySetupType, safeSetupReason, chosenLongSignal.SignalPrice, barDir);
                     logSb.AppendFormat("BarDelta: {0:F0} | Stack: {1} (Pos: {2:F2} | Ratio: {3:F1} | OppStack: {4}) | ",
                         barDelta, maxBullishStack, stackPosLong, logRatioLong, maxBearishStack);
                     logSb.AppendFormat("ImbVol: {0:F1} | Vol: {1} | POC: {2:F2} (PocVol: {3:F0} / {4:F1}%) | ",
