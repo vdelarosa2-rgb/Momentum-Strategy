@@ -1,4 +1,4 @@
-// Version: 2.51 - Per-Bar Regime Telemetry (Rolling Window Calibration Data)
+// Version: 3.00 - Self-Adaptive Institutional Imbalance Engine
 #region Using declarations
 using System;
 using System.Collections.Generic;
@@ -106,13 +106,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         MidRangeChop,
         UpperValueFriction,
         CeilingBreakout,
-        LocationConflict,
-        // Short-side families
-        CeilingValueReject,
-        AboveValueReversal,
-        WithGrainShortContinuation,
-        LowerValueFriction,
-        BasementBreakdown
+        LocationConflict
     }
 
     public enum MicrostructureRegime
@@ -195,7 +189,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private bool breakEvenTriggered = false;
         private double highestSeenPrice = 0;
-        private double lowestSeenPrice = 0;
         private double currentStopPrice = 0;
         private int lastTrailStep = -1;
 
@@ -437,7 +430,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double lastEntryValidBullishRatio = 0;
         private double lastEntryPocPosition = 0;
         private bool lastEntryRangeBarMode = false;
-        private string lastEntryRangePace = "";
         private double lastEntryRangeClosePos = 0;
         private double lastEntryRangeBodyPct = 0;
         private double lastEntryRangeOverlapPct = 0;
@@ -536,8 +528,76 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool lastEntrySessionContextGateAllowed = true;
         private bool lastEntryMinSecsPass = true;
         private bool lastEntryMaxEscapeGlobalPass = true;
-        private bool lastEntryAdaptive40RangeFilterPass = true;
-        private bool lastEntryESRangeFilterPass = true;
+        #endregion
+
+        #region Adaptive Imbalance Ratio (03m)
+        private double[] imbalanceRatioBuffer;
+        private int imbRatioBufferIndex;
+        private bool imbRatioBufferReady;
+        private double imbRatioBaseline;
+        private double imbRatioStdDev;
+        private double lastEntryAdaptiveImbBaseline;
+        private double lastEntryAdaptiveImbStdDev;
+        private double lastEntryAdaptiveImbThreshold;
+        private bool lastEntryPassAdaptiveImb;
+        #endregion
+
+        #region Imbalance Decay (03l)
+        private double lastEntryDecayedClusterScore;
+        #endregion
+
+        #region VPT Absorption (03n)
+        private double[] vptBuffer;
+        private int vptBufferIndex;
+        private bool vptBufferReady;
+        private double vptBaseline;
+        private double vptStdDev;
+        private double lastEntryVPT;
+        private double lastEntryVPTBaseline;
+        private double lastEntryVPTStdDev;
+        private bool lastEntryPassVPTAbsorption;
+        #endregion
+
+        #region Volume Velocity (03o)
+        private double[] volVelocityBuffer;
+        private int volVelocityBufferIndex;
+        private bool volVelocityBufferReady;
+        private double volVelocityBaseline;
+        private double volVelocityStdDev;
+        private double lastEntryVolVelocity;
+        private double lastEntryVolVelocityBaseline;
+        private bool lastEntryPassVolVelocity;
+        #endregion
+
+        #region Cell Performance Gate (03p)
+        private Dictionary<string, int> cellWins;
+        private Dictionary<string, int> cellLosses;
+        private string lastEntryCellKey;
+        private double lastEntryCellProbability;
+        private int lastEntryCellSamples;
+        private bool lastEntryPassCellGate;
+        #endregion
+
+        #region Regime Segmented Baselines (03r)
+        private Dictionary<VolatilityRegime, double[]> regimeVolumeBuffers;
+        private Dictionary<VolatilityRegime, int> regimeBufferIndices;
+        private Dictionary<VolatilityRegime, bool> regimeBufferReady;
+        private double lastEntryRegimeBaseline;
+        private double lastEntryRegimeStdDev;
+        private bool lastEntryUsingRegimeBaseline;
+        #endregion
+
+        #region Stack Delta Ratio (03s)
+        private double lastEntryStackDeltaRatio;
+        private double lastEntryBullImbDeltaSum;
+        private bool lastEntryPassStackDeltaRatio;
+        #endregion
+
+        #region Follow-Through Circuit Breaker (03q)
+        private bool lastEntryCircuitBreakerActive;
+        private double lastEntryCircuitBreakerFTRate;
+        private double lastEntryEffectiveImbalanceRatio;
+        private double lastEntryEffectiveMinVolume;
         #endregion
 
         #region Microstructure Regime Tracking
@@ -554,7 +614,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (State == State.SetDefaults)
             {
-                Description = "Institutional Imbalance Engine v2.53 (Tier 1 Revert)";
+                Description = "Institutional Imbalance Engine v3.00 — Self-Adaptive";
                 Name = "MomentumSubsetEnhanced";
                 Calculate = Calculate.OnPriceChange;
                 EntriesPerDirection = 1;
@@ -572,7 +632,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 BarsRequiredToTrade = 40;
 
                 AllowLongTrades = true;
-                AllowShortTrades = false;
 
                 AllowBullDiv = true;
                 AllowBearDiv = true;
@@ -616,45 +675,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 UseExhaustionFilter = false;
                 RequireExhaustionSetup = false;
 
-                // Adaptive 40 Range Filter
-                UseAdaptive40RangeFilter = false;
-                Block_LowerCont_AccelBuy = true;
-                Block_MidRange_AccelBuy = true;
-                Block_NIC1 = true;
-
-                // ES 8-Range Filter
-                UseESRangeFilter = false;
-                ES_Block_HighBO_AccelBuy = true;
-                ES_Block_UpperFriction_Quiet_AccelBuy = true;
-                ES_Block_AvwapExtreme = true;
-
-                // Phase 1 Blocking Rules
-                BlockSessLowRev = true;
-                BlockCeilingActiveAboveVAH = true;
-
-                // Week 2 Blocking Rules
-                BlockLowerContBelowValLowVol = true;
-                BlockCeilingAtVAH = true;
-                BlockLowerContCluster2 = true;
-
-                // Week 3 Blocking Rules
-                BlockCeilingNormalAboveVAH = true;
-
-                // Precision Filter E: EXTREME regime weak-signal gate
-                BlockExtremeWeakSignal = true;
-                ExtremeRecencyThreshold = 0.60;
-                ExtremeVolZThreshold = 5.0;
-                ExtremeSpikeThreshold = 3.8;
-
-                // Precision Filter L: LOWER-CONT + ACTIVE weak-signal gate
-                BlockLCAWeakSignal = true;
-                LCAActiveDistThreshold = -150.0;
-                LCAOppStackThreshold = 3;
-                LCACDSlopeThreshold = -9.0;
-                LCAVolThreshold = 600;
-                LCASpikeThreshold = 1.0;
-
-                // Value Area Filter
                 UseValueAreaFilter = false;
                 VA_AllowNoVA = true;
                 VA_AllowBelowVAL = true;
@@ -673,16 +693,44 @@ namespace NinjaTrader.NinjaScript.Strategies
                 DV_RequirePositiveAccel = false;
                 DV_BlockAcceleratingSelling = false;
 
-                // Adaptive / Performance Gates
-                UseAdaptiveVolumeGate = false;
-                AdaptiveVolumeMinMultiplier = DefaultAdaptiveVolumeMinMultiplier;
-                AdaptiveVolumeMaxStdDevMultiplier = DefaultAdaptiveVolumeMaxStdDevMultiplier;
-                UseTimeAdjustedVolumeGate = false;
-                TimeAdjustedVolumeMinMultiplier = DefaultTimeAdjustedVolumeMinMultiplier;
-                UseFollowThroughGate = false;
-                FollowThroughMinRate = DefaultFollowThroughMinRate;
-                FollowThroughMinSamples = DefaultFollowThroughMinSamples;
-                FollowThroughMinTicks = DefaultFollowThroughMinTicks;
+                // Adaptive Imbalance Ratio
+                UseAdaptiveImbalanceRatio = false;
+                AdaptiveImbalanceMultiplier = 1.0;
+
+                // Imbalance Decay
+                UseImbalanceDecay = false;
+                ImbalanceDecayLambda = 0.1;
+                ImbalanceDecayMinScore = 2;
+
+                // VPT Absorption
+                UseVolumePerTickAbsorption = false;
+                AbsorptionVPTMultiplier = 2.0;
+                AbsorptionMaxClosePosPct = 0.30;
+
+                // Volume Velocity
+                UseVolumeVelocityFilter = false;
+                VolumeVelocityMaxMultiplier = 3.0;
+                VolumeVelocityMinMultiplier = 0.3;
+
+                // Cell Performance Gate
+                UseCellPerformanceGate = false;
+                CellMinProbabilityThreshold = 0.35;
+                CellMinSamples = 5;
+
+                // Regime Segmented Baselines
+                UseRegimeSegmentedBaselines = false;
+
+                // Stack Delta Ratio
+                UseStackDeltaRatio = false;
+                MinStackDeltaRatio = 0.30;
+
+                // Follow-Through Circuit Breaker
+                UseFollowThroughCircuitBreaker = false;
+                CircuitBreakerFTThreshold = 0.35;
+                CircuitBreakerMinSamples = 5;
+                CircuitBreakerRatioBoost = 0.5;
+                CircuitBreakerVolumeMultiplier = 1.2;
+                FollowThroughMinTicks = 6.0;
 
                 // ANCHORED VWAP FILTER (4-Tier Engine)
                 UseAvwapFilter = false;
@@ -726,15 +774,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 AdaptiveMidRangeMinRatio = 5.0;
                 AdaptiveMidRangeMinEscape = -10.0;
                 AdaptiveMidRangeMaxEscape = 20.0;
-
-                // RANGE BAR ADAPTATION
-                UseRangeBarAdaptation = false;
-                RangeFastBarSecsThreshold = 25.0;
-                RangeSlowBarSecsThreshold = 90.0;
-                RangeContinuationCloseMinPct = 0.70;
-                RangeStrongSlowBarCloseMinPct = 0.80;
-                RangeMaxOverlapPct = 0.70;
-                RangeMinRejectionWickPct = 0.20;
 
                 // TIER A PROFILE
                 S3_Enable = true;
@@ -866,6 +905,37 @@ namespace NinjaTrader.NinjaScript.Strategies
                 volumeByHour = new Dictionary<int, List<double>>();
                 recentBullStacks = new List<StackInfo>();
 
+                imbalanceRatioBuffer = new double[adaptiveLookback];
+                imbRatioBufferIndex = 0;
+                imbRatioBufferReady = false;
+                imbRatioBaseline = 0;
+                imbRatioStdDev = 0;
+
+                vptBuffer = new double[adaptiveLookback];
+                vptBufferIndex = 0;
+                vptBufferReady = false;
+                vptBaseline = 0;
+                vptStdDev = 0;
+
+                volVelocityBuffer = new double[adaptiveLookback];
+                volVelocityBufferIndex = 0;
+                volVelocityBufferReady = false;
+                volVelocityBaseline = 0;
+                volVelocityStdDev = 0;
+
+                cellWins = new Dictionary<string, int>();
+                cellLosses = new Dictionary<string, int>();
+
+                regimeVolumeBuffers = new Dictionary<VolatilityRegime, double[]>();
+                regimeBufferIndices = new Dictionary<VolatilityRegime, int>();
+                regimeBufferReady = new Dictionary<VolatilityRegime, bool>();
+                foreach (VolatilityRegime r in Enum.GetValues(typeof(VolatilityRegime)))
+                {
+                    regimeVolumeBuffers[r] = new double[adaptiveLookback];
+                    regimeBufferIndices[r] = 0;
+                    regimeBufferReady[r] = false;
+                }
+
                 // Initialize Delta Velocity buffer
                 deltaVelocityHistory = new double[DeltaVelocityLookback + 2];
 
@@ -904,6 +974,21 @@ namespace NinjaTrader.NinjaScript.Strategies
             prevPoc1 = 0.0;
             prevPoc2 = 0.0;
             pocBarsProcessed = 0;
+
+            imbRatioBaseline = 0;
+            imbRatioStdDev = 0;
+            imbRatioBufferReady = false;
+
+            vptBaseline = 0;
+            vptStdDev = 0;
+            vptBufferReady = false;
+
+            volVelocityBaseline = 0;
+            volVelocityStdDev = 0;
+            volVelocityBufferReady = false;
+
+            if (cellWins != null) cellWins.Clear();
+            if (cellLosses != null) cellLosses.Clear();
 
             sessionHigh = double.MinValue;
             sessionLow = double.MaxValue;
@@ -948,7 +1033,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             breakEvenTriggered = false;
             highestSeenPrice = 0;
-            lowestSeenPrice = 0;
             currentStopPrice = 0;
             lastTrailStep = -1;
         }
@@ -1006,7 +1090,35 @@ namespace NinjaTrader.NinjaScript.Strategies
             adaptiveDeltaBaseline = 0;
             adaptiveDeltaStdDev = 0;
             avgBarRange = 0;
-        }
+
+            if (imbalanceRatioBuffer != null) Array.Clear(imbalanceRatioBuffer, 0, imbalanceRatioBuffer.Length);
+            imbRatioBufferIndex = 0;
+            imbRatioBufferReady = false;
+            imbRatioBaseline = 0;
+            imbRatioStdDev = 0;
+
+            if (vptBuffer != null) Array.Clear(vptBuffer, 0, vptBuffer.Length);
+            vptBufferIndex = 0;
+            vptBufferReady = false;
+            vptBaseline = 0;
+            vptStdDev = 0;
+
+            if (volVelocityBuffer != null) Array.Clear(volVelocityBuffer, 0, volVelocityBuffer.Length);
+            volVelocityBufferIndex = 0;
+            volVelocityBufferReady = false;
+            volVelocityBaseline = 0;
+            volVelocityStdDev = 0;
+
+            if (regimeVolumeBuffers != null)
+            {
+                foreach (VolatilityRegime r in Enum.GetValues(typeof(VolatilityRegime)))
+                {
+                    if (regimeVolumeBuffers.ContainsKey(r))
+                        Array.Clear(regimeVolumeBuffers[r], 0, regimeVolumeBuffers[r].Length);
+                    regimeBufferIndices[r] = 0;
+                    regimeBufferReady[r] = false;
+                }
+            }
 
         private void ResetDailyStats()
         {
@@ -1474,76 +1586,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 case AdaptiveContextFamily.UpperValueFriction: return "UPPER-FRICTION";
                 case AdaptiveContextFamily.CeilingBreakout: return "CEILING-BO";
                 case AdaptiveContextFamily.LocationConflict: return "LOCATION-CONFLICT";
-                case AdaptiveContextFamily.CeilingValueReject: return "CEILING-REJECT";
-                case AdaptiveContextFamily.AboveValueReversal: return "ABOVE-VAH-REV";
-                case AdaptiveContextFamily.WithGrainShortContinuation: return "SHORT-CONT";
-                case AdaptiveContextFamily.LowerValueFriction: return "LOWER-FRICTION";
-                case AdaptiveContextFamily.BasementBreakdown: return "BASEMENT-BREAK";
                 default: return "UNKNOWN";
             }
-        }
-
-        private AdaptiveContextFamily GetAdaptiveContextFamilyShort(SessionLocationBucket sessionBucket, ValueAreaContext vaContext)
-        {
-            // Short-side: selling rallies/breakdowns
-            if (sessionBucket == SessionLocationBucket.Ceiling || sessionBucket == SessionLocationBucket.Upper)
-            {
-                if (vaContext == ValueAreaContext.AboveVAH || vaContext == ValueAreaContext.AtVAH)
-                    return AdaptiveContextFamily.CeilingValueReject;
-                if (vaContext == ValueAreaContext.InValue || vaContext == ValueAreaContext.AtPOC)
-                    return AdaptiveContextFamily.LowerValueFriction;
-            }
-
-            if (vaContext == ValueAreaContext.BelowVAL || vaContext == ValueAreaContext.AtVAL)
-            {
-                if (sessionBucket == SessionLocationBucket.Upper || sessionBucket == SessionLocationBucket.Mid)
-                    return AdaptiveContextFamily.AboveValueReversal;
-            }
-
-            if (sessionBucket == SessionLocationBucket.Mid && (vaContext == ValueAreaContext.InValue || vaContext == ValueAreaContext.AtPOC))
-                return AdaptiveContextFamily.WithGrainShortContinuation;
-
-            if (sessionBucket == SessionLocationBucket.Lower || sessionBucket == SessionLocationBucket.Basement)
-            {
-                if (vaContext == ValueAreaContext.InValue || vaContext == ValueAreaContext.AtPOC || vaContext == ValueAreaContext.BelowVAL)
-                    return AdaptiveContextFamily.LowerValueFriction;
-                if (vaContext == ValueAreaContext.AboveVAH || vaContext == ValueAreaContext.AtVAH)
-                    return AdaptiveContextFamily.BasementBreakdown;
-            }
-
-            if (sessionBucket == SessionLocationBucket.Ceiling && (vaContext == ValueAreaContext.AboveVAH || vaContext == ValueAreaContext.AtVAH))
-                return AdaptiveContextFamily.CeilingValueReject;
-
-            return AdaptiveContextFamily.Unknown;
-        }
-
-        private AdaptiveRuleProfile GetAdaptiveRuleProfileShort(AdaptiveContextFamily family, bool disableBarVolumeDependentFilters)
-        {
-            // Map short-side families to their long-side counterparts for profile lookup
-            // The user will calibrate these separately via backtesting
-            AdaptiveContextFamily mappedFamily;
-            switch (family)
-            {
-                case AdaptiveContextFamily.CeilingValueReject:
-                    mappedFamily = AdaptiveContextFamily.BasementValueReclaim;
-                    break;
-                case AdaptiveContextFamily.AboveValueReversal:
-                    mappedFamily = AdaptiveContextFamily.BelowValueReversal;
-                    break;
-                case AdaptiveContextFamily.WithGrainShortContinuation:
-                    mappedFamily = AdaptiveContextFamily.WithGrainContinuation;
-                    break;
-                case AdaptiveContextFamily.LowerValueFriction:
-                    mappedFamily = AdaptiveContextFamily.UpperValueFriction;
-                    break;
-                case AdaptiveContextFamily.BasementBreakdown:
-                    mappedFamily = AdaptiveContextFamily.CeilingBreakout;
-                    break;
-                default:
-                    mappedFamily = family;
-                    break;
-            }
-            return GetAdaptiveRuleProfile(mappedFamily, disableBarVolumeDependentFilters);
         }
 
         private AdaptiveRuleProfile GetAdaptiveRuleProfile(AdaptiveContextFamily family, bool disableBarVolumeDependentFilters)
@@ -1695,20 +1739,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             return recency;
         }
 
-        private double CalculateStackRecencyShort(int stackTopTick, int stackSize, int barHighTick, int barLowTick)
-        {
-            if (barHighTick <= barLowTick) return DefaultStackRecency;
-
-            double stackMidTick = stackTopTick - ((stackSize - 1.0) / 2.0);
-            double distanceFromLow = stackMidTick - barLowTick;
-            double barRange = barHighTick - barLowTick;
-            double recency = 1.0 - (distanceFromLow / barRange);
-
-            if (recency < 0) return 0;
-            if (recency > 1.0) return 1.0;
-            return recency;
-        }
-
         private void GetFollowThroughStats(out double rate, out double avgMfe, out double avgMae, out int sampleCount)
         {
             sampleCount = recentTradeResults.Count;
@@ -1768,6 +1798,19 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             string clusterKey = clusterCount >= 2 ? "Clustered" : "Isolated";
             UpdateDailyDictionary(dailyClusterCounts, dailyClusterPnl, clusterKey, pnlTicks);
+
+            // Update cell performance
+            string cellKeyForUpdate = lastEntryContext + "_" + lastEntryVolRegime;
+            if (pnlTicks > 0)
+            {
+                if (!cellWins.ContainsKey(cellKeyForUpdate)) cellWins[cellKeyForUpdate] = 0;
+                cellWins[cellKeyForUpdate]++;
+            }
+            else if (pnlTicks < 0)
+            {
+                if (!cellLosses.ContainsKey(cellKeyForUpdate)) cellLosses[cellKeyForUpdate] = 0;
+                cellLosses[cellKeyForUpdate]++;
+            }
         }
 
         private void UpdateDailyDictionary(Dictionary<string, int> countDict, Dictionary<string, double> pnlDict, string key, double pnlTicks)
@@ -1942,44 +1985,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             return passClimax && passExhaustion;
-        }
-        #endregion
-
-        #region Helper Methods - Adaptive 40 Range Filter
-        private bool EvaluateAdaptive40RangeFilter(SessionContext sessionContext, DeltaMomentum deltaMomentum, int netImbCount)
-        {
-            if (!UseAdaptive40RangeFilter) return true;
-            if (currentMicroRegime != MicrostructureRegime.Normal) return true;
-
-            if (Block_LowerCont_AccelBuy && sessionContext == SessionContext.LowerCont && deltaMomentum == DeltaMomentum.AccelBuy)
-                return false;
-            if (Block_MidRange_AccelBuy && sessionContext == SessionContext.MidRange && deltaMomentum == DeltaMomentum.AccelBuy)
-                return false;
-            if (Block_NIC1 && netImbCount == 1)
-                return false;
-
-            return true;
-        }
-        #endregion
-
-        #region Helper Methods - ES 8-Range Filter
-        private bool EvaluateESRangeFilter(SessionContext sessionContext, DeltaMomentum deltaMomentum, AdaptiveContextFamily adaptiveContextFamily, VolatilityRegime volatilityRegime, double avwapDistTicks)
-        {
-            if (!UseESRangeFilter) return true;
-
-            // F1: Block SESS-HIGH-BO + ACCEL-BUY
-            if (ES_Block_HighBO_AccelBuy && sessionContext == SessionContext.SessionHighBo && deltaMomentum == DeltaMomentum.AccelBuy)
-                return false;
-
-            // F4: Block UPPER-FRICTION + QUIET + ACCEL-BUY
-            if (ES_Block_UpperFriction_Quiet_AccelBuy && adaptiveContextFamily == AdaptiveContextFamily.UpperValueFriction && volatilityRegime == VolatilityRegime.Quiet && deltaMomentum == DeltaMomentum.AccelBuy)
-                return false;
-
-            // F5: Block AVWAP EXTREME tier
-            if (ES_Block_AvwapExtreme && GetAvwapZoneLabel(avwapDistTicks) == "EXTREME")
-                return false;
-
-            return true;
         }
         #endregion
 
@@ -2425,23 +2430,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             recentBearStacks.RemoveAll(s => CurrentBar - s.BarIndex > maxStackMemory);
         }
 
-        private bool CanSubmitShortEntry(DateTime currentTime)
-        {
-            if (Position.MarketPosition != MarketPosition.Flat)
-                return false;
-
-            if (dailyProfitHit)
-                return false;
-
-            if (!IsWithinActiveSession(currentTime))
-                return false;
-
-            if (!CooldownWindowComplete(currentTime))
-                return false;
-
-            return true;
-        }
-
         private bool TryUpdateDynamicStopLong(double desiredStopPrice)
         {
             if (Position.MarketPosition != MarketPosition.Long)
@@ -2462,33 +2450,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return false;
 
             if (roundedDesired >= maxValidStop)
-                return false;
-
-            currentStopPrice = roundedDesired;
-            SetStopLoss(CalculationMode.Price, currentStopPrice);
-            return true;
-        }
-
-        private bool TryUpdateDynamicStopShort(double desiredStopPrice)
-        {
-            if (Position.MarketPosition != MarketPosition.Short)
-                return false;
-
-            double roundedDesired = Instrument.MasterInstrument.RoundToTickSize(desiredStopPrice);
-
-            double currentPrice = Close[0];
-            if (State == State.Realtime)
-            {
-                double ask = GetCurrentAsk();
-                if (ask > 0) currentPrice = ask;
-            }
-
-            double minValidStop = Instrument.MasterInstrument.RoundToTickSize(currentPrice + (SpreadCushionTicks * TickSize));
-
-            if (roundedDesired >= currentStopPrice)
-                return false;
-
-            if (roundedDesired <= minValidStop)
                 return false;
 
             currentStopPrice = roundedDesired;
@@ -2568,11 +2529,25 @@ namespace NinjaTrader.NinjaScript.Strategies
             return Math.Max(0.0, Math.Min(1.0, overlap / range));
         }
 
-        private string GetRangePaceLabel(double secs)
+        private double GetCellProbability(string cellKey)
         {
-            if (secs <= RangeFastBarSecsThreshold) return "FAST";
-            if (secs >= RangeSlowBarSecsThreshold) return "SLOW";
-            return "NORMAL";
+            int w = cellWins.ContainsKey(cellKey) ? cellWins[cellKey] : 0;
+            int l = cellLosses.ContainsKey(cellKey) ? cellLosses[cellKey] : 0;
+            return (double)(w + 1) / (double)(w + l + 2);
+        }
+
+        private (double mean, double stdDev) GetRegimeBaseline(VolatilityRegime regime)
+        {
+            if (!regimeVolumeBuffers.ContainsKey(regime) || !regimeBufferReady[regime])
+                return (adaptiveVolumeBaseline, adaptiveVolumeStdDev);
+            var buf = regimeVolumeBuffers[regime];
+            double mean = 0;
+            foreach (var v in buf) mean += v;
+            mean /= buf.Length;
+            double variance = 0;
+            foreach (var v in buf) variance += (v - mean) * (v - mean);
+            variance /= buf.Length;
+            return (mean, Math.Sqrt(variance));
         }
         #endregion
 
@@ -2582,10 +2557,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (!UseTradeLogging) return;
 
             Print("=========================================================================");
-            Print("SETTINGS LOG | MomentumSubsetEnhanced v2.53 (Tier 1 Revert)");
+            Print("SETTINGS LOG | MomentumSubsetEnhanced v3.00 — Self-Adaptive");
             Print("=========================================================================");
 
-            Print(string.Format("[00]  DIRECTION      : Long={0} | Short={1}", AllowLongTrades, AllowShortTrades));
+            Print(string.Format("[00]  DIRECTION      : Long={0}", AllowLongTrades));
             Print(string.Format("[00b] REGIMES        : BullDiv={0} | BearDiv={1} | BullConv={2} | BearConv={3}", AllowBullDiv, AllowBearDiv, AllowBullConv, AllowBearConv));
             Print(string.Format("[01]  COOLDOWN       : Use={0} | Minutes={1}", UseCooldown, CooldownMinutes));
             Print(string.Format("[02]  IMBALANCE CORE : Ratio={0:F1} to {1:F1} | MinImbVol={2} | AllowInfEdge={3}", ImbalanceRatio, MaxImbalanceRatio, MinImbalanceVolume, AllowInfiniteEdgeRatio));
@@ -2603,14 +2578,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 UseSessionContextFilter, Session_AllowLowRev, Session_AllowLowerCont, Session_AllowMidRange, Session_AllowUpperCont, Session_AllowHighBo));
             Print(string.Format("     ADAPT MATRIX    : Use={0} | ConstVolAutoOff={1} | ShadowMode={2} | CeilingTrapAbs%={3:F1} | Pair/Family thresholds are internally calibrated by context and bar type",
                 UseAdaptiveContextMatrix, AutoDisableBarVolumeFiltersOnConstantVolume, ShadowMatrixMode, AdaptiveCeilingTrapAbsorptionPct));
-            Print(string.Format("     RANGE BAR ADAPT : Use={0} | Fast<={1:F0}s | Slow>={2:F0}s | ContClose>={3:P0} | SlowClose>={4:P0} | MaxOverlap<={5:P0} | RejWick>={6:P0}",
-                UseRangeBarAdaptation, RangeFastBarSecsThreshold, RangeSlowBarSecsThreshold, RangeContinuationCloseMinPct, RangeStrongSlowBarCloseMinPct, RangeMaxOverlapPct, RangeMinRejectionWickPct));
             Print(string.Format("     DELTA VELOCITY  : Use={0} | Lookback={1} | MinROC={2:F1} | ReqAccel={3} | BlockAccelSell={4}",
                 UseDeltaVelocityFilter, DeltaVelocityLookback, DV_MinDeltaROC, DV_RequirePositiveAccel, DV_BlockAcceleratingSelling));
-            Print(string.Format("     ADAPT/PERF GATE : AdaptVol={0} (MinMult={1:F2} | MaxStd={2:F2}) | TimeAdj={3} (MinMult={4:F2}) | FollowThru={5} (Rate={6:P0} | MinSamples={7} | MinMFE={8:F1}T)",
-                UseAdaptiveVolumeGate, AdaptiveVolumeMinMultiplier, AdaptiveVolumeMaxStdDevMultiplier,
-                UseTimeAdjustedVolumeGate, TimeAdjustedVolumeMinMultiplier,
-                UseFollowThroughGate, FollowThroughMinRate, FollowThroughMinSamples, FollowThroughMinTicks));
             Print(string.Format("     AVWAP ENGINE    : Use={0} | Anchor={1} | Deadzone={2}T | Extreme={3}T | Killzone={4}T",
                 UseAvwapFilter, AvwapAnchor, AvwapDeadzoneTicks, AvwapExtremeTicks, AvwapKillzoneTicks));
             Print(string.Format("     AVWAP ADD-ONS   : SlopeVeto={0} (Lookback={1} | MinDrop={2}T) | AcceptanceFilter(Per-Anchor Confirmed Reclaim)={3}",
@@ -2622,16 +2591,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print(string.Format("     BAR-REGIME TEL  : Enabled (per-bar R1k+VolZ logged on every RTH bar for regime calibration)"));
             Print(string.Format("     MICRO-REGIME    : Enable={0} | Lookback={1} | Dense<{2:F1} | Thin>{3:F1} | AllowDense={4} | AllowNormal={5} | AllowThin={6} | AllowWarmup={7}",
                 EnableRegimeFilter, R1kRollingWindowBars, RegimeDenseThreshold, RegimeThinThreshold, AllowDenseRegime, AllowNormalMicroRegime, AllowThinRegime, AllowWarmupRegime));
-            Print(string.Format("     ADAPTIVE-40-RANGE: Use={0} | LowerCont+AccelBuy={1} | MidRange+AccelBuy={2} | NIC=1={3}",
-                UseAdaptive40RangeFilter, Block_LowerCont_AccelBuy, Block_MidRange_AccelBuy, Block_NIC1));
-            Print(string.Format("     ES-8-RANGE: Use={0} | HighBO+AccelBuy={1} | UpperFric+Quiet+AccelBuy={2} | AvwapExtreme={3}",
-                UseESRangeFilter, ES_Block_HighBO_AccelBuy, ES_Block_UpperFriction_Quiet_AccelBuy, ES_Block_AvwapExtreme));
-            Print(string.Format("     PHASE1-RULES: BlockSessLowRev={0} | BlockCeilingActiveAboveVAH={1} | BlockLowerContBelowValLowVol={2} | BlockCeilingAtVAH={3} | BlockLowerContCluster2={4} | BlockCeilingNormalAboveVAH={5}",
-                BlockSessLowRev, BlockCeilingActiveAboveVAH, BlockLowerContBelowValLowVol, BlockCeilingAtVAH, BlockLowerContCluster2, BlockCeilingNormalAboveVAH));
-            Print(string.Format("     PRECISION-E: BlockExtremeWeakSignal={0} | Recency<={1:F2} | VolZ>={2:F1} | Spike>={3:F1}x",
-                BlockExtremeWeakSignal, ExtremeRecencyThreshold, ExtremeVolZThreshold, ExtremeSpikeThreshold));
-            Print(string.Format("     PRECISION-L: BlockLCAWeakSignal={0} | ActiveDist<={1:F1}T | OppStack>={2} | CDSlope<{3:F1}% | Vol<{4} | Spike<{5:F2}x",
-                BlockLCAWeakSignal, LCAActiveDistThreshold, LCAOppStackThreshold, LCACDSlopeThreshold, LCAVolThreshold, LCASpikeThreshold));
 
             Print("-------------------------------------------------------------------------");
             Print(string.Format("[04] TIER A PROFILE  : ENABLED = {0} | Target Size: {1} to {2}", S3_Enable, S3_MinStackSize, S3_MaxStackSize));
@@ -2719,13 +2678,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                     rOut = lastTrade.Exit.Name.ToUpper();
             }
 
-            bool passAdaptVolMin = lastEntryTotalBarVol >= lastEntryAdaptiveMinVol;
-            bool passAdaptVolMax = lastEntryTotalBarVol <= lastEntryAdaptiveMaxVol;
-            bool passAdaptiveVolumeGate = !UseAdaptiveVolumeGate || (passAdaptVolMin && passAdaptVolMax);
-            bool passTimeAdj = lastEntryTotalBarVol >= lastEntryTimeAdjMinVol;
-            bool passTimeAdjustedGate = !UseTimeAdjustedVolumeGate || passTimeAdj;
-            bool passFt = lastEntryFollowThroughRate >= FollowThroughMinRate || lastEntryFtSampleCount < FollowThroughMinSamples;
-            bool passFollowThroughGate = !UseFollowThroughGate || passFt;
             bool passRegime = lastEntryVolRegimeGateAllowed;
 
             Print(""); 
@@ -2765,8 +2717,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 lastEntryBookAskVol));
 
             if (lastEntryRangeBarMode)
-                Print(string.Format("     [RANGE-BAR] Pace: {0} | ClosePos: {1:P0} | Body: {2:P0} | Overlap: {3:P0} | LowWick: {4:P0} | UpWick: {5:P0}",
-                    lastEntryRangePace, lastEntryRangeClosePos, lastEntryRangeBodyPct, lastEntryRangeOverlapPct, lastEntryRangeLowerWickPct, lastEntryRangeUpperWickPct));
+                Print(string.Format("     [RANGE-BAR] ClosePos: {0:P0} | Body: {1:P0} | Overlap: {2:P0} | LowWick: {3:P0} | UpWick: {4:P0}",
+                    lastEntryRangeClosePos, lastEntryRangeBodyPct, lastEntryRangeOverlapPct, lastEntryRangeLowerWickPct, lastEntryRangeUpperWickPct));
 
             Print(string.Format("     [FOOTPRINT-RAW] ImbCount: {0}B/{1}S | ImbDensity: {2:F2}/T | Stack: {3} vs Opp: {4} | POCPos: {5:F2} | POCVol: {6:F0} ({7:F1}%) | LowZone: {8:F0} ({9:F1}%) | UpperZone: {10:F0} ({11:F1}%)",
                 lastEntryBullishImbalanceCount, lastEntryBearishImbalanceCount, lastEntryImbalanceDensity, lastEntryMaxBullishStack, lastEntryMaxBearishStack,
@@ -2786,23 +2738,17 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Print("     [SHADOW] Full Engine Verdict: " + ((lastEntryPreMatrixPass && lastEntryMatrixVerdict) ? "PASS" : "BLOCK"));
             }
 
-            Print(string.Format("     [ENTRY-ADAPTIVE] Vol: {0:F0} | Base: {1:F0} | StdDev: {2:F0} | Min/Max: {3:F0}/{4:F0} | GateEnabled: {5} | PassMin: {6} | PassMax: {7} | PassGate: {8} | PassRegime: {9} | Spike: {10:F2}x",
-                lastEntryTotalBarVol, lastEntryAdaptiveVolBase, lastEntryAdaptiveVolStdDev, lastEntryAdaptiveMinVol, lastEntryAdaptiveMaxVol, UseAdaptiveVolumeGate, passAdaptVolMin, passAdaptVolMax, passAdaptiveVolumeGate, passRegime, lastEntryVolumeSpikeRatio));
+            Print(string.Format("     [ENTRY-ADAPTIVE] Vol: {0:F0} | Base: {1:F0} | StdDev: {2:F0} | PassRegime: {3} | Spike: {4:F2}x",
+                lastEntryTotalBarVol, lastEntryAdaptiveVolBase, lastEntryAdaptiveVolStdDev, passRegime, lastEntryVolumeSpikeRatio));
 
-            Print(string.Format("     [ENTRY-TIME&FT] TimeAdjMin: {0:F0} | TimeGate={1} (Pass: {2}) | FTRate: {3:P0} | FTGate={4} (Pass: {5}) | AvgMFE: {6:F1}T | AvgMAE: {7:F1}T | Samples: {8}",
-                lastEntryTimeAdjMinVol, UseTimeAdjustedVolumeGate, passTimeAdjustedGate, lastEntryFollowThroughRate, UseFollowThroughGate, passFollowThroughGate, lastEntryAvgMfe, lastEntryFtAvgMae, lastEntryFtSampleCount));
+            Print(string.Format("     [ENTRY-FT] FTRate: {0:P0} | AvgMFE: {1:F1}T | AvgMAE: {2:F1}T | Samples: {3}",
+                lastEntryFollowThroughRate, lastEntryAvgMfe, lastEntryFtAvgMae, lastEntryFtSampleCount));
 
             Print(string.Format("     [VOL-REGIME] Regime: {0} | ZScore: {1:F2} | GateEnabled: {2} | GateAllowed: {3}",
                 lastEntryVolRegime, lastEntryVolZScore, UseVolatilityRegimeGate, lastEntryVolRegimeGateAllowed));
 
             Print(string.Format("     [REGIME] RollR1k={0:F1} | Regime={1} | Thresholds={2:F1}/{3:F1}",
                 lastEntryRollingR1k, lastEntryMicroRegime, RegimeDenseThreshold, RegimeThinThreshold));
-
-            Print(string.Format("     [ADAPTIVE-40-RANGE] Enabled={0} | Pass={1} | Regime={2} | Context={3} | Momentum={4}",
-                UseAdaptive40RangeFilter, lastEntryAdaptive40RangeFilterPass, lastEntryMicroRegime, lastEntryContext, lastEntryDeltaMomentum));
-
-            Print(string.Format("     [ES-8-RANGE] Enabled={0} | Pass={1} | Context={2} | Momentum={3} | Family={4} | VolRegime={5} | AvwapTier={6}",
-                UseESRangeFilter, lastEntryESRangeFilterPass, lastEntryContext, lastEntryDeltaMomentum, lastEntryAdaptiveFamily, lastEntryVolRegime, lastEntryAvwapTier));
 
             Print(string.Format("     [CLIMAX-EXHAUST] IsClimax: {0} | PrevClimax: {1} | IsExhaust: {2} | ClimaxScore: {3:F2} | ExhaustScore: {4:F2} | PrevVol: {5:F0} | CurVol: {6:F0} | PassClimax: {7} | PassExhaust: {8}",
                 lastEntryBarIsClimax, lastEntryPrevBarWasClimax, lastEntryBarIsExhaustion, lastEntryClimaxScore, lastEntryExhaustionScore,
@@ -2893,11 +2839,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 highestSeenPrice = averagePrice;
                 currentStopPrice = averagePrice - (StopLossTicks * TickSize);
-            }
-            else if (marketPosition == MarketPosition.Short)
-            {
-                lowestSeenPrice = averagePrice;
-                currentStopPrice = averagePrice + (StopLossTicks * TickSize);
             }
         }
 
@@ -3075,48 +3016,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                     }
                 }
             }
-            else if (Position.MarketPosition == MarketPosition.Short && !dailyProfitHit)
-            {
-                if (Low[0] < lowestSeenPrice)
-                    lowestSeenPrice = Low[0];
-
-                double mfeTicks = (Position.AveragePrice - lowestSeenPrice) / TickSize;
-
-                // Break-Even Logic
-                if (UseBreakEven && !breakEvenTriggered && mfeTicks >= BreakEvenTriggerTicks)
-                {
-                    double bePrice = Position.AveragePrice - (BreakEvenOffsetTicks * TickSize);
-
-                    if (TryUpdateDynamicStopShort(bePrice))
-                    {
-                        breakEvenTriggered = true;
-
-                        if (UseTradeLogging)
-                            Print(string.Format("{0} | BE TRIGGERED (SHORT) | MFE: {1:F1}T | Stop moved to: {2}",
-                                Time[0].ToString("HH:mm:ss"), mfeTicks, currentStopPrice));
-                    }
-                }
-
-                // Trailing Stop Logic
-                if (UseAutoTrail && mfeTicks >= AutoTrailTriggerTicks)
-                {
-                    int steps = (int)Math.Floor((mfeTicks - AutoTrailTriggerTicks) / AutoTrailFrequencyTicks);
-                    if (steps > lastTrailStep)
-                    {
-                        double activeMfeLevelTicks = AutoTrailTriggerTicks + (steps * AutoTrailFrequencyTicks);
-                        double newStopPrice = Position.AveragePrice - ((activeMfeLevelTicks - AutoTrailStopLossTicks) * TickSize);
-
-                        if (TryUpdateDynamicStopShort(newStopPrice))
-                        {
-                            lastTrailStep = steps;
-
-                            if (UseTradeLogging)
-                                Print(string.Format("{0} | TRAIL STEP {1} (SHORT) | MFE: {2:F1}T | Stop moved to: {3}",
-                                    Time[0].ToString("HH:mm:ss"), steps, mfeTicks, currentStopPrice));
-                        }
-                    }
-                }
-            }
             #endregion
 
             if (!IsFirstTickOfBar) return;
@@ -3228,6 +3127,21 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             #region Update Delta Velocity
             UpdateDeltaVelocity(barDelta);
+            #endregion
+
+            #region Update Regime Volume Buffers
+            if (IsWithinNYSESession(Time[1]) && regimeVolumeBuffers != null)
+            {
+                VolatilityRegime regimeForBuffer = GetVolatilityRegime(totalBarVol);
+                if (regimeVolumeBuffers.ContainsKey(regimeForBuffer))
+                {
+                    int idx = regimeBufferIndices[regimeForBuffer];
+                    regimeVolumeBuffers[regimeForBuffer][idx] = totalBarVol;
+                    regimeBufferIndices[regimeForBuffer] = (idx + 1) % adaptiveLookback;
+                    if (CurrentBar >= adaptiveLookback)
+                        regimeBufferReady[regimeForBuffer] = true;
+                }
+            }
             #endregion
 
             #region Calculate Volatility Regime & Z-Score
@@ -3453,6 +3367,63 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
             #endregion
 
+            #region Update Adaptive Imbalance Ratio Buffer
+            if (IsWithinNYSESession(Time[1]) && maxBullishStack > 0 && totalBarVol > 0)
+            {
+                double thisBarRatio = validBullishRatio == double.MaxValue ? 0 : validBullishRatio;
+                imbalanceRatioBuffer[imbRatioBufferIndex] = thisBarRatio;
+                imbRatioBufferIndex = (imbRatioBufferIndex + 1) % adaptiveLookback;
+
+                if (CurrentBar >= adaptiveLookback)
+                {
+                    imbRatioBufferReady = true;
+                    double rsum = 0;
+                    for (int i = 0; i < adaptiveLookback; i++) rsum += imbalanceRatioBuffer[i];
+                    imbRatioBaseline = rsum / adaptiveLookback;
+                    double rsumSq = 0;
+                    for (int i = 0; i < adaptiveLookback; i++) { double d = imbalanceRatioBuffer[i] - imbRatioBaseline; rsumSq += d * d; }
+                    imbRatioStdDev = Math.Sqrt(rsumSq / adaptiveLookback);
+                }
+            }
+            #endregion
+
+            #region Update VPT Buffer
+            if (IsWithinNYSESession(Time[1]))
+            {
+                double signalRangeTicks_ = (High[1] - Low[1]) / TickSize;
+                double vpt_ = totalBarVol / Math.Max(1.0, signalRangeTicks_);
+                vptBuffer[vptBufferIndex] = vpt_;
+                vptBufferIndex = (vptBufferIndex + 1) % adaptiveLookback;
+                if (CurrentBar >= adaptiveLookback)
+                {
+                    vptBufferReady = true;
+                    double vsum = 0;
+                    for (int i = 0; i < adaptiveLookback; i++) vsum += vptBuffer[i];
+                    vptBaseline = vsum / adaptiveLookback;
+                    double vssq = 0;
+                    for (int i = 0; i < adaptiveLookback; i++) { double d = vptBuffer[i] - vptBaseline; vssq += d * d; }
+                    vptStdDev = Math.Sqrt(vssq / adaptiveLookback);
+                }
+            }
+            #endregion
+
+            #region Update Volume Velocity Buffer
+            if (IsWithinNYSESession(Time[1]))
+            {
+                double signalSecs_ = (CurrentBar >= 2) ? (Time[1] - Time[2]).TotalSeconds : 0;
+                double vvel_ = totalBarVol / Math.Max(1.0, signalSecs_);
+                volVelocityBuffer[volVelocityBufferIndex] = vvel_;
+                volVelocityBufferIndex = (volVelocityBufferIndex + 1) % adaptiveLookback;
+                if (CurrentBar >= adaptiveLookback)
+                {
+                    volVelocityBufferReady = true;
+                    double vvsum = 0;
+                    for (int i = 0; i < adaptiveLookback; i++) vvsum += volVelocityBuffer[i];
+                    volVelocityBaseline = vvsum / adaptiveLookback;
+                }
+            }
+            #endregion
+
             #region Stack Cluster Analysis
             double bullStackTopPrice = maxBullishStackTopTick * TickSize;
             double bullStackBottomPrice = (maxBullishStackTopTick - maxBullishStack + 1) * TickSize;
@@ -3491,6 +3462,21 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
             #endregion
 
+            #region Imbalance Decay Scoring
+            double decayedClusterScore = 0;
+            if (maxBullishStack > 0)
+            {
+                foreach (var s in recentBullStacks)
+                {
+                    int barsAgo = CurrentBar - s.BarIndex;
+                    decayedClusterScore += Math.Exp(-ImbalanceDecayLambda * barsAgo);
+                }
+                // Include current bar
+                decayedClusterScore += 1.0;
+            }
+            lastEntryDecayedClusterScore = decayedClusterScore;
+            #endregion
+
             #region POC & Derived Metrics
             double currentPocPrice = pocTick * TickSize;
 
@@ -3512,19 +3498,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             int cAdvLong = bullishImbalanceCount - bearishImbalanceCount;
             double dAdvLong = bullishImbalanceDeltaSum - bearishImbalanceDeltaSum;
 
-            // Short-side derived metrics
-            double domVolShortPercent = 0;
-            if (totalBarVol > 0) domVolShortPercent = ((validAvgBearishImbVol * maxBearishStack) / totalBarVol) * 100.0;
-
-            double maxBearishStackBottomTick = maxBearishStackTopTick - maxBearishStack + 1;
-            double escapeShortTicks = (maxBearishStackBottomTick * TickSize - Close[1]) / TickSize;
-            double stackMidTickShort = maxBearishStackTopTick - ((maxBearishStack - 1.0) / 2.0);
-
-            double stackPosShort = DefaultSessionPosition;
-            if (endTick > startTick) stackPosShort = (stackMidTickShort - startTick) / (double)(endTick - startTick);
-
-            int cAdvShort = bearishImbalanceCount - bullishImbalanceCount;
-            double dAdvShort = bearishImbalanceDeltaSum - bullishImbalanceDeltaSum;
             #endregion
 
             #region Market Regime Detection
@@ -3547,7 +3520,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             string spatialPairStr = GetSpatialPairLabel(sessionBucket, vaContext);
 
             // Short-side recency uses LOW of bar for recency calculation (bearish stack position from bottom)
-            double stackRecencyShort = CalculateStackRecencyShort((int)maxBearishStackTopTick, maxBearishStack, barHighTick, barLowTick);
+            double stackRecencyShort = CalculateStackRecency((int)maxBearishStackTopTick, maxBearishStack, barHighTick, barLowTick);
             double stackMidPriceShortCalc = (maxBearishStackTopTick - ((maxBearishStack - 1.0) / 2.0)) * TickSize;
             double sessionPosShort = GetSessionPosition(stackMidPriceShortCalc);
             SessionContext stackContextShortEnum = GetStackContext(sessionPosShort);
@@ -3556,11 +3529,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             string sessionBucketShortStr = GetSessionLocationBucketString(sessionBucketShort);
             string spatialPairShortStr = GetSpatialPairLabel(sessionBucketShort, vaContext);
 
-            double adaptiveMinVol = adaptiveReady ? adaptiveVolumeBaseline * AdaptiveVolumeMinMultiplier : S3_MinVolume;
-            double adaptiveMaxVol = adaptiveReady ? adaptiveVolumeBaseline + (adaptiveVolumeStdDev * AdaptiveVolumeMaxStdDevMultiplier) : S3_MaxVolume;
+            double adaptiveMinVol = S3_MinVolume;
+            double adaptiveMaxVol = S3_MaxVolume;
 
             double timeBaseline = GetTimeAdjustedBaseline();
-            double timeAdjustedMinVol = timeBaseline > 0 ? timeBaseline * TimeAdjustedVolumeMinMultiplier : adaptiveMinVol;
+            double timeAdjustedMinVol = adaptiveMinVol;
 
             double ftRate, ftAvgMfe, ftAvgMae;
             int ftSampleCount;
@@ -3620,8 +3593,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             bool constantVolumeBarMode = IsConstantVolumeBarEnvironment(totalBarVol);
             AdaptiveContextFamily adaptiveContextFamily = GetAdaptiveContextFamily(sessionBucket, vaContext);
             AdaptiveRuleProfile adaptiveProfile = GetAdaptiveRuleProfile(adaptiveContextFamily, constantVolumeBarMode);
-            AdaptiveContextFamily adaptiveContextFamilyShort = GetAdaptiveContextFamilyShort(sessionBucketShort, vaContext);
-            AdaptiveRuleProfile adaptiveProfileShort = GetAdaptiveRuleProfileShort(adaptiveContextFamilyShort, constantVolumeBarMode);
             bool disableBarVolumeDependentFilters = constantVolumeBarMode && AutoDisableBarVolumeFiltersOnConstantVolume;
             if (UseAdaptiveContextMatrix && adaptiveProfile.DisableBarVolumeDependentFilters)
                 disableBarVolumeDependentFilters = true;
@@ -3634,7 +3605,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             double signalUpperWickPct = GetSignalUpperWickPct();
             double signalLowerWickPct = GetSignalLowerWickPct();
             double signalOverlapPct = GetSignalOverlapPct();
-            string rangePaceLabel = rangeBarMode ? GetRangePaceLabel(signalBarSecs) : "N/A";
             double rangePer1kVolumeTicks = totalBarVol > 0 ? signalBarRangeTicks * (1000.0 / totalBarVol) : 0;
             double deltaPerTick = signalBarRangeTicks > 0 ? barDelta / signalBarRangeTicks : 0;
             double deltaPctOfVolume = totalBarVol > 0 ? (barDelta / totalBarVol) * 100.0 : 0;
@@ -3723,15 +3693,41 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 s3_long_valid = true;
 
+                // FOLLOW-THROUGH CIRCUIT BREAKER (03q)
+                double effectiveImbalanceRatio = ImbalanceRatio;
+                double effectiveMinVolume = S3_MinVolume;
+                double cbFTRate = 0;
+                int cbSampleCount = 0;
+                bool cbActive = false;
+                if (UseFollowThroughCircuitBreaker)
+                {
+                    double cbAvgMfe, cbAvgMae;
+                    GetFollowThroughStats(out cbFTRate, out cbAvgMfe, out cbAvgMae, out cbSampleCount);
+                    if (cbSampleCount >= CircuitBreakerMinSamples && cbFTRate < CircuitBreakerFTThreshold)
+                    {
+                        cbActive = true;
+                        effectiveImbalanceRatio = ImbalanceRatio + CircuitBreakerRatioBoost;
+                        effectiveMinVolume = S3_MinVolume * CircuitBreakerVolumeMultiplier;
+                    }
+                }
+                lastEntryCircuitBreakerActive = cbActive;
+                lastEntryCircuitBreakerFTRate = cbFTRate;
+                lastEntryEffectiveImbalanceRatio = cbActive ? effectiveImbalanceRatio : ImbalanceRatio;
+                lastEntryEffectiveMinVolume = effectiveMinVolume;
+
                 // Bull Count Filter
                 if (S3_UseBullCount && (bullishImbalanceCount < S3_MinBullCount || bullishImbalanceCount > S3_MaxBullCount)) s3_long_valid = false;
 
                 if (S3_UseCdSlope && (cdSlopeLog_S3_Long < S3_MinCdSlope || cdSlopeLog_S3_Long > S3_MaxCdSlope)) s3_long_valid = false;
                 if (S3_RequireDivergence && marketRegime != MarketRegime.BullDiv) s3_long_valid = false;
-                if (!disableBarVolumeDependentFilters && S3_UseMinVolume && totalBarVol < S3_MinVolume) s3_long_valid = false;
+                if (!disableBarVolumeDependentFilters && S3_UseMinVolume && totalBarVol < effectiveMinVolume) s3_long_valid = false;
                 if (!disableBarVolumeDependentFilters && S3_UseMaxVolume && totalBarVol > S3_MaxVolume) s3_long_valid = false;
                 if (S3_UseMaxImbVol && validAvgBullishImbVol > S3_MaxImbVol) s3_long_valid = false;
                 if (S3_UseDominance && (cAdvLong < S3_MinDomCount || dAdvLong < S3_MinDomDelta)) s3_long_valid = false;
+
+                // If circuit breaker is active, re-validate ratio with boosted threshold
+                if (cbActive && validBullishRatio < effectiveImbalanceRatio)
+                    s3_long_valid = false;
                 
                 // Volume Spike Filter
                 if (!disableBarVolumeDependentFilters && S3_UseVolumeSpike)
@@ -3892,113 +3888,104 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (UseSessionContextFilter && !IsSessionContextAllowed(stackContextEnum))
                     s3_long_valid = false;
 
-                // ADAPTIVE 40 RANGE FILTER (C3)
-                bool adaptive40RangePass = EvaluateAdaptive40RangeFilter(stackContextEnum, currentDeltaMomentum, cAdvLong);
-                if (!adaptive40RangePass)
-                    s3_long_valid = false;
-
-                // ES 8-RANGE FILTER (C3-3)
-                bool esRangeFilterPass = EvaluateESRangeFilter(stackContextEnum, currentDeltaMomentum, adaptiveContextFamily, volRegimeEnum, activeAvwapDistTicks);
-                if (!esRangeFilterPass)
-                    s3_long_valid = false;
-
-                // PHASE 1 RULE #1: Block SESS-LOW-REV (Any Vol Regime)
-                if (BlockSessLowRev && stackContextEnum == SessionContext.SessionLowRev)
+                // ADAPTIVE IMBALANCE RATIO (03m)
+                double effectiveImbalanceRatioForImb = effectiveImbalanceRatio;
+                if (UseAdaptiveImbalanceRatio && imbRatioBufferReady)
                 {
-                    if (UseTradeLogging)
-                        Print("BLOCK: SESS-LOW-REV context blocked by Phase1 Rule #1");
-                    s3_long_valid = false;
+                    double adaptiveImbThreshold = imbRatioBaseline + AdaptiveImbalanceMultiplier * imbRatioStdDev;
+                    lastEntryAdaptiveImbBaseline = imbRatioBaseline;
+                    lastEntryAdaptiveImbStdDev = imbRatioStdDev;
+                    lastEntryAdaptiveImbThreshold = adaptiveImbThreshold;
+                    lastEntryPassAdaptiveImb = validBullishRatio >= adaptiveImbThreshold;
+                    if (!lastEntryPassAdaptiveImb) s3_long_valid = false;
+                }
+                else
+                {
+                    lastEntryPassAdaptiveImb = true;
+                    lastEntryAdaptiveImbBaseline = imbRatioBaseline;
+                    lastEntryAdaptiveImbStdDev = imbRatioStdDev;
+                    lastEntryAdaptiveImbThreshold = ImbalanceRatio;
                 }
 
-                // PHASE 1 RULE #2: Block SESS-HIGH-BO + ACTIVE + ABOVE-VAH
-                if (BlockCeilingActiveAboveVAH && stackContextEnum == SessionContext.SessionHighBo && volRegimeEnum == VolatilityRegime.Active && vaContext == ValueAreaContext.AboveVAH)
+                // IMBALANCE DECAY (03l)
+                if (UseImbalanceDecay && maxBullishStack > 0)
                 {
-                    if (UseTradeLogging)
-                        Print("BLOCK: SESS-HIGH-BO + ACTIVE + ABOVE-VAH blocked by Phase1 Rule #2");
-                    s3_long_valid = false;
+                    if (decayedClusterScore < ImbalanceDecayMinScore)
+                        s3_long_valid = false;
                 }
 
-                // W2 RULE B: Block LOWER-CONT + BELOW-VAL + (NORMAL or QUIET)
-                if (BlockLowerContBelowValLowVol && stackContextEnum == SessionContext.LowerCont && vaContext == ValueAreaContext.BelowVAL
-                    && (volRegimeEnum == VolatilityRegime.Normal || volRegimeEnum == VolatilityRegime.Quiet))
+                // VPT ABSORPTION DETECTION (03n)
+                double signalVPT = signalBarRangeTicks > 0 ? totalBarVol / Math.Max(1.0, signalBarRangeTicks) : 0;
+                lastEntryVPT = signalVPT;
+                lastEntryVPTBaseline = vptBaseline;
+                lastEntryVPTStdDev = vptStdDev;
+                lastEntryPassVPTAbsorption = true;
+                if (UseVolumePerTickAbsorption && vptBufferReady)
                 {
-                    if (UseTradeLogging)
-                        Print("BLOCK: LOWER-CONT + BELOW-VAL + NORMAL/QUIET blocked by W2 Rule B");
-                    s3_long_valid = false;
-                }
-
-                // W2 RULE C: Block SESS-HIGH-BO + AT-VAH (any VolRegime)
-                if (BlockCeilingAtVAH && stackContextEnum == SessionContext.SessionHighBo && vaContext == ValueAreaContext.AtVAH)
-                {
-                    if (UseTradeLogging)
-                        Print("BLOCK: SESS-HIGH-BO + AT-VAH blocked by W2 Rule C");
-                    s3_long_valid = false;
-                }
-
-                // W2 RULE F: Block LOWER-CONT + Cluster>=2
-                if (BlockLowerContCluster2 && stackContextEnum == SessionContext.LowerCont && bullClusterCount >= 2)
-                {
-                    if (UseTradeLogging)
-                        Print("BLOCK: LOWER-CONT + Cluster>=2 blocked by W2 Rule F");
-                    s3_long_valid = false;
-                }
-
-                // W3 RULE A: Block SESS-HIGH-BO + NORMAL + ABOVE-VAH
-                if (BlockCeilingNormalAboveVAH && stackContextEnum == SessionContext.SessionHighBo && volRegimeEnum == VolatilityRegime.Normal && vaContext == ValueAreaContext.AboveVAH)
-                {
-                    if (UseTradeLogging)
-                        Print("BLOCK: SESS-HIGH-BO + NORMAL + ABOVE-VAH blocked by W3 Rule A");
-                    s3_long_valid = false;
-                }
-
-                // PRECISION FILTER E: Block EXTREME regime weak-signal entries
-                if (BlockExtremeWeakSignal && volRegimeEnum == VolatilityRegime.Extreme)
-                {
-                    bool weakSignal = false;
-                    string filterReason = "";
-
-                    if (marketRegime == MarketRegime.BullDiv || marketRegime == MarketRegime.BearDiv)
-                    { weakSignal = true; filterReason = "CvdState=" + stateNameStr; }
-                    else if (stackRecencyLong <= ExtremeRecencyThreshold)
-                    { weakSignal = true; filterReason = "Recency=" + stackRecencyLong.ToString("F2"); }
-                    else if (volZScore >= ExtremeVolZThreshold)
-                    { weakSignal = true; filterReason = "VolZ=" + volZScore.ToString("F2"); }
-                    else if (currentVolSpikeRatio >= ExtremeSpikeThreshold)
-                    { weakSignal = true; filterReason = "Spike=" + currentVolSpikeRatio.ToString("F2") + "x"; }
-                    else if (stackContextEnum == SessionContext.SessionLowRev || stackContextEnum == SessionContext.LowerCont)
-                    { weakSignal = true; filterReason = "Context=" + GetSessionContextString(stackContextEnum); }
-
-                    if (weakSignal)
+                    if (signalVPT > vptBaseline + AbsorptionVPTMultiplier * vptStdDev
+                        && signalClosePosPct < AbsorptionMaxClosePosPct)
                     {
-                        if (UseTradeLogging)
-                            Print("BLOCK: EXTREME weak signal — " + filterReason + " | Precision Filter E");
+                        lastEntryPassVPTAbsorption = false;
                         s3_long_valid = false;
                     }
                 }
 
-                // PRECISION FILTER L: Block LOWER-CONT + ACTIVE weak-signal entries
-                if (BlockLCAWeakSignal && stackContextEnum == SessionContext.LowerCont && volRegimeEnum == VolatilityRegime.Active)
+                // VOLUME VELOCITY FILTER (03o)
+                double volumeVelocity = totalBarVol / Math.Max(1.0, signalBarSecs);
+                lastEntryVolVelocity = volumeVelocity;
+                lastEntryVolVelocityBaseline = volVelocityBaseline;
+                lastEntryPassVolVelocity = true;
+                if (UseVolumeVelocityFilter && volVelocityBufferReady && volVelocityBaseline > 0)
                 {
-                    // Negate activeAvwapDistTicks to match log sign convention: negative when price is below Active AVWAP
-                    double activeDistBelowAvwap = -activeAvwapDistTicks;
-                    bool weakSignalL = false;
-                    string filterReasonL = "";
-
-                    if (activeDistBelowAvwap <= LCAActiveDistThreshold)
-                    { weakSignalL = true; filterReasonL = "ActiveDist=" + activeDistBelowAvwap.ToString("F1") + "T"; }
-                    else if (maxBearishStack >= LCAOppStackThreshold)
-                    { weakSignalL = true; filterReasonL = "OppStack=" + maxBearishStack; }
-                    else if (cdSlopeLog_S3_Long < LCACDSlopeThreshold)
-                    { weakSignalL = true; filterReasonL = "CDSlope=" + cdSlopeLog_S3_Long.ToString("F2") + "%"; }
-                    else if (totalBarVol < LCAVolThreshold)
-                    { weakSignalL = true; filterReasonL = "Vol=" + totalBarVol.ToString("F0"); }
-                    else if (currentVolSpikeRatio < LCASpikeThreshold)
-                    { weakSignalL = true; filterReasonL = "Spike=" + currentVolSpikeRatio.ToString("F2") + "x"; }
-
-                    if (weakSignalL)
+                    if (volumeVelocity > volVelocityBaseline * VolumeVelocityMaxMultiplier
+                        || volumeVelocity < volVelocityBaseline * VolumeVelocityMinMultiplier)
                     {
-                        if (UseTradeLogging)
-                            Print("BLOCK: LCA weak signal — " + filterReasonL + " | Precision Filter L");
+                        lastEntryPassVolVelocity = false;
+                        s3_long_valid = false;
+                    }
+                }
+
+                // CELL PERFORMANCE GATE (03p)
+                string cellKey = stackContextLong + "_" + volRegime;
+                double cellProb = GetCellProbability(cellKey);
+                int ww = cellWins.ContainsKey(cellKey) ? cellWins[cellKey] : 0;
+                int ll = cellLosses.ContainsKey(cellKey) ? cellLosses[cellKey] : 0;
+                int cellTotal = ww + ll;
+                lastEntryCellKey = cellKey;
+                lastEntryCellProbability = cellProb;
+                lastEntryCellSamples = cellTotal;
+                lastEntryPassCellGate = true;
+                if (UseCellPerformanceGate && cellTotal >= CellMinSamples && cellProb < CellMinProbabilityThreshold)
+                {
+                    lastEntryPassCellGate = false;
+                    s3_long_valid = false;
+                }
+
+                // REGIME SEGMENTED BASELINES (03r) — telemetry
+                lastEntryUsingRegimeBaseline = false;
+                lastEntryRegimeBaseline = adaptiveVolumeBaseline;
+                lastEntryRegimeStdDev = adaptiveVolumeStdDev;
+                if (UseRegimeSegmentedBaselines)
+                {
+                    var regRB = GetRegimeBaseline(volRegimeEnum);
+                    if (regimeBufferReady.ContainsKey(volRegimeEnum) && regimeBufferReady[volRegimeEnum])
+                    {
+                        lastEntryRegimeBaseline = regRB.mean;
+                        lastEntryRegimeStdDev = regRB.stdDev;
+                        lastEntryUsingRegimeBaseline = true;
+                    }
+                }
+
+                // STACK DELTA RATIO (03s)
+                double stackDeltaRatio = bullishImbalanceDeltaSum / Math.Max(1.0, Math.Abs(barDelta));
+                lastEntryStackDeltaRatio = stackDeltaRatio;
+                lastEntryBullImbDeltaSum = bullishImbalanceDeltaSum;
+                lastEntryPassStackDeltaRatio = true;
+                if (UseStackDeltaRatio && maxBullishStack > 0)
+                {
+                    if (stackDeltaRatio < MinStackDeltaRatio)
+                    {
+                        lastEntryPassStackDeltaRatio = false;
                         s3_long_valid = false;
                     }
                 }
@@ -4413,78 +4400,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                     }
                 }
 
-                bool rangeBarVerdict = true;
-                string rangeBarBlockReason = "";
-                string rangeBarProofState = "";
-
-                bool runRangeBarAdaptation = UseRangeBarAdaptation && rangeBarMode
-                    && ((UseAdaptiveContextMatrix && matrixVerdict) || !UseAdaptiveContextMatrix);
-
-                if (runRangeBarAdaptation)
-                {
-                    bool rangeBarPass = true;
-                    string rangeBarReason = "";
-                    string rangeBarState = "";
-
-                    switch (adaptiveContextFamily)
-                    {
-                        case AdaptiveContextFamily.WithGrainContinuation:
-                        case AdaptiveContextFamily.UpperValueFriction:
-                        case AdaptiveContextFamily.CeilingBreakout:
-                        {
-                            double contCloseMin = adaptiveContextFamily == AdaptiveContextFamily.CeilingBreakout
-                                ? Math.Max(RangeContinuationCloseMinPct, 0.75)
-                                : RangeContinuationCloseMinPct;
-
-                            bool closePass = signalClosePosPct >= contCloseMin;
-                            bool overlapPass = signalOverlapPct <= RangeMaxOverlapPct;
-                            bool wickPass = signalUpperWickPct <= Math.Max(0.15, 1.0 - contCloseMin);
-                            bool slowBarPass = signalBarSecs < RangeSlowBarSecsThreshold || signalClosePosPct >= RangeStrongSlowBarCloseMinPct;
-
-                            rangeBarPass = closePass && overlapPass && wickPass && slowBarPass;
-                            if (!rangeBarPass)
-                                rangeBarReason = string.Format("RangeBar: continuation quality failed (ClosePos={0:P0} | UpperWick={1:P0} | Overlap={2:P0} | Secs={3:F1})", signalClosePosPct, signalUpperWickPct, signalOverlapPct, signalBarSecs);
-
-                            rangeBarState = string.Format("ClosePass={0} (Need>={1:P0}) | UpperWickPass={2} (Max<={3:P0}) | OverlapPass={4} (Max<={5:P0}) | SlowBarPass={6} (NeedClose>={7:P0} when Secs>={8:F0})",
-                                closePass, contCloseMin, wickPass, Math.Max(0.15, 1.0 - contCloseMin), overlapPass, RangeMaxOverlapPct, slowBarPass, RangeStrongSlowBarCloseMinPct, RangeSlowBarSecsThreshold);
-                            break;
-                        }
-
-                        case AdaptiveContextFamily.LocationConflict:
-                        {
-                            bool conflictReclaimShapePass = signalClosePosPct >= 0.60 || signalLowerWickPct >= RangeMinRejectionWickPct;
-                            bool conflictOverlapPass = signalOverlapPct <= Math.Min(0.90, RangeMaxOverlapPct + 0.15);
-                            rangeBarPass = conflictReclaimShapePass && conflictOverlapPass;
-                            if (!rangeBarPass)
-                                rangeBarReason = string.Format("RangeBar: conflict shape failed (ClosePos={0:P0} | LowerWick={1:P0} | Overlap={2:P0})", signalClosePosPct, signalLowerWickPct, signalOverlapPct);
-
-                            rangeBarState = string.Format("ConflictShapePass={0} (ClosePos={1:P0} | LowerWick={2:P0}) | ConflictOverlapPass={3} (Overlap={4:P0})",
-                                conflictReclaimShapePass, signalClosePosPct, signalLowerWickPct, conflictOverlapPass, signalOverlapPct);
-                            break;
-                        }
-                    }
-
-                    if (!string.IsNullOrEmpty(rangeBarState))
-                        rangeBarProofState = rangeBarState;
-
-                    if (!rangeBarPass)
-                    {
-                        rangeBarVerdict = false;
-                        rangeBarBlockReason = rangeBarReason;
-                    }
-                }
-
-                if (!string.IsNullOrEmpty(rangeBarProofState))
-                {
-                    if (string.IsNullOrEmpty(matrixProofState))
-                        matrixProofState = "RangeBar=" + rangeBarProofState;
-                    else
-                        matrixProofState += " | RangeBar=" + rangeBarProofState;
-                }
-
-                if (!rangeBarVerdict && string.IsNullOrEmpty(matrixBlockReason))
-                    matrixBlockReason = rangeBarBlockReason;
-
                 if (UseAdaptiveContextMatrix && string.IsNullOrEmpty(matrixProofState))
                     matrixProofState = "No family-specific matrix rules fired";
 
@@ -4495,27 +4410,24 @@ namespace NinjaTrader.NinjaScript.Strategies
             #region Signal Validation
             bool baseStackValid = (S3_Enable && maxBullishStack >= S3_MinStackSize && maxBullishStack <= S3_MaxStackSize);
             bool fullEnginePass = preMatrixPass && matrixVerdict;
-            bool preAdaptPass = preMatrixPass && rangeBarVerdict;
-            bool fullAdaptivePass = fullEnginePass && rangeBarVerdict;
 
             if (UseAdaptiveContextMatrix)
             {
                 if (ShadowMatrixMode)
                 {
-                    // Shadow mode: do not block trades. Log the matrix verdict, but execute off the pre-matrix pass,
-                    // while still allowing the standalone range-bar adaptation branch to operate.
-                    s3_long_valid = preAdaptPass;
+                    // Shadow mode: do not block trades. Log the matrix verdict, but execute off the pre-matrix pass.
+                    s3_long_valid = preMatrixPass;
                 }
                 else
                 {
-                    // Matrix authority mode: adaptive context matrix controls execution, then range-bar adaptation can further refine it.
-                    s3_long_valid = fullAdaptivePass;
+                    // Matrix authority mode: adaptive context matrix controls execution.
+                    s3_long_valid = fullEnginePass;
                 }
             }
             else
             {
-                // Legacy Tier A / pre-matrix behavior when adaptive matrix is disabled, but standalone range-bar adaptation may still refine it.
-                s3_long_valid = preAdaptPass;
+                // Legacy Tier A / pre-matrix behavior when adaptive matrix is disabled.
+                s3_long_valid = preMatrixPass;
             }
 
             bool cooldownOkEval = CooldownWindowComplete(Time[0]);
@@ -4576,8 +4488,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                     lastEntrySessionContextGateAllowed = IsSessionContextAllowed(stackContextEnum);
                     lastEntryMinSecsPass = passMinBarSecs;
                     lastEntryMaxEscapeGlobalPass = passMaxEscapeGlobal;
-                    lastEntryAdaptive40RangeFilterPass = adaptive40RangePass;
-                    lastEntryESRangeFilterPass = esRangeFilterPass;
 
                     lastEntryBarIsClimax = isClimax;
                     lastEntryBarIsExhaustion = isExhaustion;
@@ -4655,7 +4565,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                     lastEntryValidBullishRatio = validBullishRatio == double.MaxValue ? 999.0 : validBullishRatio;
                     lastEntryPocPosition = pocPosition;
                     lastEntryRangeBarMode = rangeBarMode;
-                    lastEntryRangePace = rangePaceLabel;
                     lastEntryRangeClosePos = signalClosePosPct;
                     lastEntryRangeBodyPct = signalBodyPct;
                     lastEntryRangeOverlapPct = signalOverlapPct;
@@ -4777,570 +4686,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             #endregion
             } // closes S3 long if
 
-            #region Tier A Short Validation and Entry
-            bool passMinBarSecsShort = true;
-            bool passMaxEscapeGlobalShort = true;
-
-            if (AllowShortTrades && !longEntryTaken && Position.MarketPosition == MarketPosition.Flat
-                && S3_Enable && maxBearishStack >= S3_MinStackSize && maxBearishStack <= S3_MaxStackSize)
-            {
-                bool s3_short_valid = true;
-
-                // Bear Count Filter (mirrors S3_UseBullCount)
-                if (S3_UseBullCount && (bearishImbalanceCount < S3_MinBullCount || bearishImbalanceCount > S3_MaxBullCount)) s3_short_valid = false;
-
-                // CD Slope: for shorts require NEGATIVE slope (selling pressure)
-                if (S3_UseCdSlope && (cdSlopeLog_S3_Long > -S3_MinCdSlope || cdSlopeLog_S3_Long < -S3_MaxCdSlope)) s3_short_valid = false;
-                if (S3_RequireDivergence && marketRegime != MarketRegime.BearDiv) s3_short_valid = false;
-                if (!disableBarVolumeDependentFilters && S3_UseMinVolume && totalBarVol < S3_MinVolume) s3_short_valid = false;
-                if (!disableBarVolumeDependentFilters && S3_UseMaxVolume && totalBarVol > S3_MaxVolume) s3_short_valid = false;
-                if (S3_UseMaxImbVol && validAvgBearishImbVol > S3_MaxImbVol) s3_short_valid = false;
-                if (S3_UseDominance && (cAdvShort < S3_MinDomCount || dAdvShort < S3_MinDomDelta)) s3_short_valid = false;
-
-                // Volume Spike Filter
-                if (!disableBarVolumeDependentFilters && S3_UseVolumeSpike)
-                {
-                    if (currentVolSpikeRatio < S3_MinVolumeSpikeRatio || currentVolSpikeRatio > S3_MaxVolumeSpikeRatio) s3_short_valid = false;
-                }
-
-                // POC Checks: for shorts, HIGH POC position is favorable
-                if (S3_UseMinPoc && pocPosition > (1.0 - S3_MinPoc)) s3_short_valid = false;
-                if (S3_UsePoc && pocPosition < (1.0 - S3_MaxPoc)) s3_short_valid = false;
-
-                // Recency Check
-                if (S3_UseRecency && (stackRecencyShort < S3_MinRecency || stackRecencyShort > S3_MaxRecency)) s3_short_valid = false;
-
-                bool effectiveUseMinEscapeShort = UseAdaptiveContextMatrix ? adaptiveProfileShort.UseMinEscape : S3_UseMinEscape;
-                double effectiveMinEscapeShort = UseAdaptiveContextMatrix ? adaptiveProfileShort.MinEscape : S3_MinEscape;
-                bool effectiveUseMaxEscapeShort = UseAdaptiveContextMatrix ? adaptiveProfileShort.UseMaxEscape : S3_UseMaxEscape;
-                double effectiveMaxEscapeShort = UseAdaptiveContextMatrix ? adaptiveProfileShort.MaxEscape : S3_MaxEscape;
-
-                if (effectiveUseMinEscapeShort && escapeShortTicks < effectiveMinEscapeShort) s3_short_valid = false;
-                if (effectiveUseMaxEscapeShort && escapeShortTicks > effectiveMaxEscapeShort) s3_short_valid = false;
-
-                if (!UseAdaptiveContextMatrix)
-                {
-                    if (S3_UseMinDomVol && domVolShortPercent < S3_MinDomVol) s3_short_valid = false;
-                    if (S3_UseMaxDomVol && domVolShortPercent > S3_MaxDomVol) s3_short_valid = false;
-                }
-
-                // Bar Quality & Delta Filter (for shorts: negative delta favored)
-                if (S3_UseBarDelta && (barDelta > -S3_MinBarDelta || barDelta < -S3_MaxBarDelta)) s3_short_valid = false;
-                if (S3_UseNormalizedDelta && (normDeltaPct > -S3_MinNormalizedDeltaPct || normDeltaPct < -S3_MaxNormalizedDeltaPct)) s3_short_valid = false;
-
-                if (S3_UseMinOppStack && maxBullishStack < S3_MinOppStack) s3_short_valid = false;
-                if (S3_UseMaxOppStack && maxBullishStack > S3_MaxOppStack) s3_short_valid = false;
-
-                if (S3_UseDeltaDivergence)
-                {
-                    if (S3_RequireDeceleration && !improvingDeltaShort) s3_short_valid = false;
-                    else if (!S3_RequireDeceleration && !divShort) s3_short_valid = false;
-                }
-
-                if (S3_UseCdSlopeAccel && s3_slopeAccel > -S3_MinCdSlopeAccel) s3_short_valid = false;
-
-                // Absorption: Check HIGH zone for shorts (supply absorption at the top)
-                double s3_absShortPct = (totalBarVol > 0) ? (s3_highZoneVol / totalBarVol) * 100.0 : 0;
-                double s3_absShortMult = s3_highAsk / Math.Max(1.0, avgVolPerTick);
-
-                if (S3_UseAbsorption)
-                {
-                    if (s3_absShortPct < S3_MinAbsorptionPct) s3_short_valid = false;
-                    if (S3_UseMaxAbsorption && s3_absShortPct > S3_MaxAbsorptionPct) s3_short_valid = false;
-                    if (s3_absShortMult < S3_MinAbsorptionMultiple) s3_short_valid = false;
-                }
-
-                if (S3_UsePocMigration)
-                {
-                    if (pocBarsProcessed < 2) s3_short_valid = false;
-                    else
-                    {
-                        if (S3_RequirePocReversal && !revDown) s3_short_valid = false;
-                        if (-pMig1 / TickSize < S3_MinPocMigrationTicks) s3_short_valid = false;
-                    }
-                }
-
-                // AVWAP 4-TIER ENGINE (for shorts)
-                if (UseAvwapFilter)
-                {
-                    if (activeAnchorIdx <= 0 || activeAnchorIdx > CurrentBar - 1)
-                    {
-                        s3_short_valid = false;
-                    }
-                    else
-                    {
-                        // For shorts: distance is ABOVE VWAP (positive = above = favorable)
-                        double distTicksShort = (Close[1] - activeLiveAvwap) / TickSize;
-
-                        // VWAP Acceptance Rule
-                        if (UseVwapAcceptanceFilter && !activeAnchorReclaimed)
-                            s3_short_valid = false;
-
-                        // SLOPE VETO: For shorts, rising VWAP = veto (don't fight uptrend)
-                        if (UseAvwapSlopeFilter && activeHistoricalAvwap > 0 && activeLiveAvwap > 0)
-                        {
-                            double slopeUpTicks = (activeLiveAvwap - activeHistoricalAvwap) / TickSize;
-                            if (slopeUpTicks >= AvwapSlopeVetoTicks)
-                                s3_short_valid = false;
-                        }
-
-                        // TIER 1: DEADZONE & BELOW VWAP (too close or below VWAP)
-                        if (distTicksShort < AvwapDeadzoneTicks)
-                        {
-                            s3_short_valid = false;
-                        }
-                        // TIER 4: KILLZONE (too far above VWAP)
-                        else if (distTicksShort > AvwapKillzoneTicks)
-                        {
-                            s3_short_valid = false;
-                        }
-                        // TIER 3: EXTREME ZONE (stall proof required)
-                        else if (distTicksShort > AvwapExtremeTicks)
-                        {
-                            bool hasAbsorptionStallProofShort = S3_UseAbsorption
-                                && s3_absShortPct >= S3_MinAbsorptionPct
-                                && (!S3_UseMaxAbsorption || s3_absShortPct <= S3_MaxAbsorptionPct)
-                                && s3_absShortMult >= S3_MinAbsorptionMultiple;
-
-                            bool hasStallProofShort = isExhaustion || isClimax || improvingDeltaShort || hasAbsorptionStallProofShort;
-
-                            if (!hasStallProofShort)
-                                s3_short_valid = false;
-                        }
-                        // TIER 2: SWEET SPOT
-                        // else: pass
-                    }
-                }
-
-                if (UseKeyLevelGate && !keyLevelGatePass)
-                    s3_short_valid = false;
-
-                // GLOBAL GATES
-                if (UseVolatilityRegimeGate && !volRegimeGateAllowed)
-                    s3_short_valid = false;
-
-                if (!IsMicroRegimeAllowed())
-                    s3_short_valid = false;
-
-                if (UseSessionContextFilter && !IsSessionContextAllowed(stackContextShortEnum))
-                    s3_short_valid = false;
-
-                passMinBarSecsShort = !UseMinBarSecs || signalBarSecs >= MinBarSecsThreshold;
-                if (!passMinBarSecsShort)
-                    s3_short_valid = false;
-
-                passMaxEscapeGlobalShort = !UseMaxEscapeGlobal || escapeShortTicks <= MaxEscapeGlobalTicks;
-                if (!passMaxEscapeGlobalShort)
-                    s3_short_valid = false;
-
-                // Adaptive Context Matrix for shorts
-                bool preMatrixPassShort = s3_short_valid;
-                bool matrixVerdictShort = true;
-                string matrixProofStateShort = "";
-                string matrixBlockReasonShort = "";
-
-                if (UseAdaptiveContextMatrix)
-                {
-                    switch (adaptiveContextFamilyShort)
-                    {
-                        case AdaptiveContextFamily.CeilingValueReject:
-                        {
-                            bool clusterOrDomPassShort = bearClusterCount >= 2 || domVolShortPercent >= adaptiveProfileShort.MinDomVol;
-                            if (!clusterOrDomPassShort)
-                            {
-                                matrixVerdictShort = false;
-                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
-                                    matrixBlockReasonShort = "CeilingReject: needs bear cluster >= 2 or DomVol support";
-                            }
-
-                            bool valueRejectGate = improvingDeltaShort || divShort || ((s3_absShortMult >= 1.5) && (escapeShortTicks <= 0));
-                            if (!valueRejectGate)
-                            {
-                                matrixVerdictShort = false;
-                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
-                                    matrixBlockReasonShort = "CeilingReject: needs improving delta/divergence or absorption supply";
-                            }
-
-                            bool reclaimPassShort = !adaptiveProfileShort.RequireAvwapReclaim || activeAnchorIdx <= 0 || activeAnchorReclaimed;
-                            if (!reclaimPassShort)
-                            {
-                                matrixVerdictShort = false;
-                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
-                                    matrixBlockReasonShort = "CeilingReject: active AVWAP reclaim required";
-                            }
-
-                            matrixProofStateShort = string.Format("ClusterOrDom={0} | ValueReject={1} | Reclaim={2}",
-                                clusterOrDomPassShort, valueRejectGate, reclaimPassShort);
-                            break;
-                        }
-
-                        case AdaptiveContextFamily.AboveValueReversal:
-                        {
-                            bool clusterOrDomPassShort = bearClusterCount >= 2 || domVolShortPercent >= adaptiveProfileShort.MinDomVol;
-                            if (!clusterOrDomPassShort)
-                            {
-                                matrixVerdictShort = false;
-                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
-                                    matrixBlockReasonShort = "AboveVAH: needs bear cluster >= 2 or DomVol support";
-                            }
-
-                            bool reversalGateAShort = improvingDeltaShort && (barDelta < 0) && (validBearishRatio >= adaptiveProfileShort.MinRatio);
-                            bool reversalGateBShort = (s3_absShortMult >= 2.0) && (escapeShortTicks <= 0);
-                            bool reversalProofShort = reversalGateAShort || reversalGateBShort;
-                            if (!reversalProofShort)
-                            {
-                                matrixVerdictShort = false;
-                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
-                                    matrixBlockReasonShort = "AboveVAH: needs negative reclaim proof or absorption reversal";
-                            }
-
-                            bool pocDropPassShort = !adaptiveProfileShort.RequirePocLift
-                                || ((pocBarsProcessed >= 2) && (pMig1 < 0 || revDown));
-                            if (!pocDropPassShort)
-                            {
-                                matrixVerdictShort = false;
-                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
-                                    matrixBlockReasonShort = "AboveVAH: POC drop required";
-                            }
-
-                            bool reclaimPassShort = !adaptiveProfileShort.RequireAvwapReclaim || activeAnchorIdx <= 0 || activeAnchorReclaimed;
-                            if (!reclaimPassShort)
-                            {
-                                matrixVerdictShort = false;
-                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
-                                    matrixBlockReasonShort = "AboveVAH: active AVWAP reclaim required";
-                            }
-
-                            matrixProofStateShort = string.Format("ClusterOrDom={0} | GateA={1} | GateB={2} | POCDrop={3} | Reclaim={4}",
-                                clusterOrDomPassShort, reversalGateAShort, reversalGateBShort, pocDropPassShort, reclaimPassShort);
-                            break;
-                        }
-
-                        case AdaptiveContextFamily.WithGrainShortContinuation:
-                        {
-                            bool domPassShort = domVolShortPercent >= adaptiveProfileShort.MinDomVol;
-                            if (!domPassShort)
-                            {
-                                matrixVerdictShort = false;
-                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
-                                    matrixBlockReasonShort = "ShortCont: DomVol below minimum";
-                            }
-
-                            matrixProofStateShort = string.Format("DomPass={0} (Need>={1:F1})", domPassShort, adaptiveProfileShort.MinDomVol);
-                            break;
-                        }
-
-                        case AdaptiveContextFamily.LowerValueFriction:
-                        {
-                            bool domPassShort = domVolShortPercent >= adaptiveProfileShort.MinDomVol;
-                            if (!domPassShort)
-                            {
-                                matrixVerdictShort = false;
-                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
-                                    matrixBlockReasonShort = "LowerFriction: DomVol below minimum";
-                            }
-
-                            bool ratioPassShort = validBearishRatio >= adaptiveProfileShort.MinRatio;
-                            if (!ratioPassShort)
-                            {
-                                matrixVerdictShort = false;
-                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
-                                    matrixBlockReasonShort = "LowerFriction: ratio below minimum";
-                            }
-
-                            bool improvingPassShort = !adaptiveProfileShort.RequireImprovingDelta || improvingDeltaShort;
-                            if (!improvingPassShort)
-                            {
-                                matrixVerdictShort = false;
-                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
-                                    matrixBlockReasonShort = "LowerFriction: improving delta required";
-                            }
-
-                            matrixProofStateShort = string.Format("DomPass={0} | RatioPass={1} | ImprovingDelta={2}",
-                                domPassShort, ratioPassShort, improvingPassShort);
-                            break;
-                        }
-
-                        case AdaptiveContextFamily.BasementBreakdown:
-                        {
-                            bool intensityPassShort = (domVolShortPercent >= adaptiveProfileShort.MinDomVol) || (validBearishRatio >= adaptiveProfileShort.MinRatio);
-                            if (!intensityPassShort)
-                            {
-                                matrixVerdictShort = false;
-                                if (string.IsNullOrEmpty(matrixBlockReasonShort))
-                                    matrixBlockReasonShort = "BasementBreak: needs DomVol or Ratio breakdown intensity";
-                            }
-
-                            matrixProofStateShort = string.Format("IntensityPass={0} (Dom>={1:F1} OR Ratio>={2:F1})",
-                                intensityPassShort, adaptiveProfileShort.MinDomVol, adaptiveProfileShort.MinRatio);
-                            break;
-                        }
-                    }
-
-                    if (string.IsNullOrEmpty(matrixProofStateShort))
-                        matrixProofStateShort = "No family-specific matrix rules fired";
-
-                    if (matrixVerdictShort && string.IsNullOrEmpty(matrixBlockReasonShort))
-                        matrixBlockReasonShort = "PASS";
-                }
-
-                bool fullEnginePassShort = preMatrixPassShort && matrixVerdictShort;
-
-                if (UseAdaptiveContextMatrix)
-                {
-                    if (ShadowMatrixMode)
-                        s3_short_valid = preMatrixPassShort;
-                    else
-                        s3_short_valid = fullEnginePassShort;
-                }
-                else
-                {
-                    s3_short_valid = preMatrixPassShort;
-                }
-
-                bool validShortSignal = s3_short_valid && CooldownWindowComplete(Time[0]);
-
-                if (validShortSignal)
-                {
-                    // Capture Entry Snapshot for Short
-                    lastEntryContext = stackContextShort;
-                    lastEntryVolRegime = volRegime;
-                    lastEntryStackRecency = stackRecencyShort;
-                    lastEntrySessionPos = sessionPosShort;
-                    lastEntryVolZScore = volZScore;
-                    lastEntryAdaptiveMinVol = adaptiveMinVol;
-                    lastEntryAdaptiveMaxVol = adaptiveMaxVol;
-                    lastEntryTimeBaseline = timeBaseline;
-                    lastEntryFollowThroughRate = ftRate;
-                    lastEntryAvgMfe = ftAvgMfe;
-                    lastEntryClusterCount = bearClusterCount;
-
-                    lastEntryAdaptiveVolBase = adaptiveVolumeBaseline;
-                    lastEntryAdaptiveVolStdDev = adaptiveVolumeStdDev;
-                    lastEntryTotalBarVol = totalBarVol;
-                    lastEntryVolumeSpikeRatio = currentVolSpikeRatio;
-                    lastEntryTimeAdjMinVol = timeAdjustedMinVol;
-                    lastEntryFtSampleCount = ftSampleCount;
-                    lastEntryFtAvgMae = ftAvgMae;
-                    lastEntryNetCnt = cAdvShort;
-                    lastEntryRegimeAllowed = regimeAllowed;
-                    lastEntryBaseStackPass = (S3_Enable && maxBearishStack >= S3_MinStackSize && maxBearishStack <= S3_MaxStackSize);
-                    lastEntryPreMatrixPass = preMatrixPassShort;
-                    lastEntryMatrixVerdict = matrixVerdictShort;
-
-                    lastEntryBarDelta = barDelta;
-                    lastEntryNormDeltaPct = normDeltaPct;
-                    lastEntryBarDir = barDir;
-                    lastEntryPrevBarDelta1 = prevBarDelta1;
-                    lastEntryPrevBarDelta2 = prevBarDelta2;
-                    lastEntryImprovingDelta = improvingDeltaShort;
-                    lastEntryDivLong = divShort;
-                    lastEntryPocMig1 = pMig1 / TickSize;
-                    lastEntryRevUp = revDown;
-                    lastEntryCurrentPoc = currentPocPrice;
-                    lastEntryPrevPoc1 = prevPoc1;
-                    lastEntryPrevPoc2 = prevPoc2;
-
-                    lastEntryVolRegimeGateAllowed = volRegimeGateAllowed;
-                    lastEntryRollingR1k = rollingR1k;
-                    lastEntryMicroRegime = GetMicroRegimeString(currentMicroRegime);
-                    lastEntrySessionContextGateAllowed = IsSessionContextAllowed(stackContextShortEnum);
-                    lastEntryMinSecsPass = passMinBarSecsShort;
-                    lastEntryMaxEscapeGlobalPass = passMaxEscapeGlobalShort;
-                    lastEntryAdaptive40RangeFilterPass = true;
-                    lastEntryESRangeFilterPass = true;
-
-                    lastEntryBarIsClimax = isClimax;
-                    lastEntryBarIsExhaustion = isExhaustion;
-                    lastEntryPrevBarWasClimax = prevBarClimaxState;
-                    lastEntryClimaxScore = climaxScore;
-                    lastEntryExhaustionScore = exhaustionScore;
-                    lastEntryClimaxPrevVol = priorBarVolumeForTelemetry;
-                    lastEntryClimaxCurVol = totalBarVol;
-                    lastEntryPassClimaxFilter = passClimaxFilter;
-                    lastEntryPassExhaustionFilter = !UseExhaustionFilter || isExhaustion || !RequireExhaustionSetup;
-
-                    lastEntryVAH = nyseSessionVAH;
-                    lastEntryVAL = nyseSessionVAL;
-                    lastEntrySessionPOCVA = nyseSessionPOC;
-                    lastEntryVAContext = vaContextStr;
-                    lastEntryPriceDistToPOC = priceDistToPOC;
-                    lastEntryPassVAFilter = passVAFilter;
-
-                    lastEntryDeltaROC = currentDeltaROC;
-                    lastEntryDeltaAccel = currentDeltaAccel;
-                    lastEntryDeltaVelocityScore = deltaVelocityScore;
-                    lastEntryDeltaMomentum = GetDeltaMomentumString(currentDeltaMomentum);
-                    lastEntryPassDeltaVelocityFilter = passDeltaVelocityFilter;
-
-                    lastEntryOlderSlope = s3_olderSlope;
-                    lastEntrySlopeAccel = s3_slopeAccel;
-                    lastEntryPassCdAccel = !S3_UseCdSlopeAccel || (s3_slopeAccel <= -S3_MinCdSlopeAccel);
-                    lastEntryPassDeltaDiv = !S3_UseDeltaDivergence || (S3_RequireDeceleration ? improvingDeltaShort : divShort);
-
-                    double s3_absShortPctSnap = (totalBarVol > 0) ? (s3_highZoneVol / totalBarVol) * 100.0 : 0;
-                    double s3_absShortMultSnap = s3_highAsk / Math.Max(1.0, avgVolPerTick);
-
-                    lastEntryLowZoneVol = s3_highZoneVol;
-                    lastEntryLowBid = s3_highAsk;
-                    lastEntryLowAsk = s3_highBid;
-                    lastEntryAbsPct = s3_absShortPctSnap;
-                    lastEntryAbsMult = s3_absShortMultSnap;
-                    lastEntryPassAbsorb = !S3_UseAbsorption ||
-                                          ((s3_absShortPctSnap >= S3_MinAbsorptionPct) &&
-                                           (!S3_UseMaxAbsorption || s3_absShortPctSnap <= S3_MaxAbsorptionPct) &&
-                                           (s3_absShortMultSnap >= S3_MinAbsorptionMultiple));
-                    lastEntryPassPocMig = !S3_UsePocMigration || ((pocBarsProcessed >= 2) && (!S3_RequirePocReversal || revDown) && (-pMig1 / TickSize >= S3_MinPocMigrationTicks));
-
-                    lastEntryAdaptiveFamily = GetAdaptiveContextFamilyString(adaptiveContextFamilyShort);
-                    lastEntryAdaptiveRuleSummary = "";
-                    lastEntryMatrixProofState = matrixProofStateShort;
-                    lastEntryMatrixBlockReason = matrixBlockReasonShort;
-                    lastEntryConstantVolumeMode = constantVolumeBarMode;
-                    lastEntryDisableBarVolumeFilters = disableBarVolumeDependentFilters;
-                    lastEntrySessionAxis = sessionBucketShortStr;
-                    lastEntrySpatialPair = spatialPairShortStr;
-
-                    lastEntrySignalPrice = Close[1];
-                    lastEntrySessionHigh = sessionHigh;
-                    lastEntrySessionLow = sessionLow;
-                    lastEntrySessionMid = signalSessionMid;
-                    lastEntrySignalBarRangeTicks = signalBarRangeTicks;
-                    lastEntrySignalBarSecs = signalBarSecs;
-                    lastEntryRangePer1kVolumeTicks = rangePer1kVolumeTicks;
-                    lastEntryDeltaPerTick = deltaPerTick;
-                    lastEntryDeltaPctOfVolume = deltaPctOfVolume;
-                    lastEntryImbalanceDensity = imbalanceDensity;
-                    lastEntryPocVolPct = pocVolPct;
-                    lastEntryMaxVolAtPrice = maxVolAtPrice;
-                    lastEntryUpperZoneVol = s3_lowZoneVol;
-                    lastEntryUpperZonePct = lowZonePct;
-                    lastEntryLowZonePct = highZonePct;
-                    lastEntryBullishImbalanceCount = bullishImbalanceCount;
-                    lastEntryBearishImbalanceCount = bearishImbalanceCount;
-                    lastEntryMaxBullishStack = maxBullishStack;
-                    lastEntryMaxBearishStack = maxBearishStack;
-                    lastEntryEscapeTicks = escapeShortTicks;
-                    lastEntryDomVolPercent = domVolShortPercent;
-                    lastEntryValidBullishRatio = validBearishRatio == double.MaxValue ? 999.0 : validBearishRatio;
-                    lastEntryPocPosition = pocPosition;
-                    lastEntryRangeBarMode = rangeBarMode;
-                    lastEntryRangePace = rangePaceLabel;
-                    lastEntryRangeClosePos = signalClosePosPct;
-                    lastEntryRangeBodyPct = signalBodyPct;
-                    lastEntryRangeOverlapPct = signalOverlapPct;
-                    lastEntryRangeLowerWickPct = signalLowerWickPct;
-                    lastEntryRangeUpperWickPct = signalUpperWickPct;
-                    lastEntryPriceToSessionLowTicks = priceToSessionLowTicks;
-                    lastEntryPriceToSessionHighTicks = priceToSessionHighTicks;
-                    lastEntryPriceToSessionMidTicks = priceToSessionMidTicks;
-                    lastEntryPriceToVALTicks = priceToVALTicks;
-                    lastEntryPriceToVAHTicks = priceToVAHTicks;
-                    lastEntryPriceToPOCSignedTicks = priceToPOCSignedTicks;
-                    lastEntryKeyLevelSummary = keyLevelSummary;
-                    lastEntryNearestKeyLevel = nearestKeyLevel;
-                    lastEntryNearestKeyLevelDistTicks = nearestKeyLevelAbsTicks == double.MaxValue ? 0 : nearestKeyLevelAbsTicks;
-                    lastEntryNearVWAP = nearVWAP;
-                    lastEntryNearPDH = nearPDH;
-                    lastEntryNearPDL = nearPDL;
-                    lastEntryNearIBH = nearIBH;
-                    lastEntryNearIBL = nearIBL;
-                    lastEntryNearPMH = nearPMH;
-                    lastEntryNearPML = nearPML;
-                    lastEntryNearPOC = nearPOC;
-                    lastEntryKeyLevelGatePass = keyLevelGatePass;
-
-                    // Build Short Trade Log
-                    string localTradeLogShort = "";
-                    if (UseTradeLogging)
-                    {
-                        double logRatioShort = validBearishRatio == double.MaxValue ? 999.0 : validBearishRatio;
-
-                        var logSbShort = new StringBuilder();
-                        logSbShort.AppendFormat("SigBar: {0} | Entry: {{ENTRY_TIME}} | SHORT (TIER A SHORT) | SigPx: {1} | Dir: {2} | ",
-                            Time[1].ToString("yyyy-MM-dd HH:mm:ss"), Close[1], barDir);
-                        logSbShort.AppendFormat("BarDelta: {0:F0} | Stack: {1} (Pos: {2:F2} | Ratio: {3:F1} | OppStack: {4}) | ",
-                            barDelta, maxBearishStack, stackPosShort, logRatioShort, maxBullishStack);
-                        logSbShort.AppendFormat("ImbVol: {0:F1} | Vol: {1} | POC: {2:F2} (PocVol: {3:F0} / {4:F1}%) | ",
-                            validAvgBearishImbVol, totalBarVol, pocPosition, maxVolAtPrice, pocVolPct);
-                        logSbShort.AppendFormat("CvdState: {0} (Allowed: {1}) | ImbCount: [{2}B/{3}S/NetCnt: {4}/NetD: {5:+0;-0;0}] | Escape: {6:F0}T | ",
-                            stateNameStr, regimeAllowed, bullishImbalanceCount, bearishImbalanceCount, cAdvShort, dAdvShort, escapeShortTicks);
-                        logSbShort.AppendFormat("DomVol: {0:F1}% | CD Slope: {1:F2}% | CtxFam: {2} | Pair: {3} | KeyLvl: {4} | SigRange: {5:F1}T | SigSecs: {6:F2} | R1k: {7:F1}T | D/V: {8:F1}%",
-                            domVolShortPercent, cdSlopeLog_S3_Long, GetAdaptiveContextFamilyString(adaptiveContextFamilyShort), spatialPairShortStr, nearestKeyLevel, signalBarRangeTicks, signalBarSecs, rangePer1kVolumeTicks, deltaPctOfVolume);
-
-                        localTradeLogShort = logSbShort.ToString();
-                    }
-
-                    pendingTradeLog = localTradeLogShort.Replace("{ENTRY_TIME}", Time[0].ToString("yyyy-MM-dd HH:mm:ss"));
-
-                    CaptureAnchorAvwapTelemetry(
-                        vBarsType, rthOpenBarIdx, hasReclaimedOpenVwap,
-                        out lastEntryAvwapOpen, out lastEntryAvwapOpenHistorical, out lastEntryAvwapOpenSignalDistTicks,
-                        out lastEntryAvwapOpenSlopeDropTicks, out lastEntryAvwapOpenTier, out lastEntryAvwapOpenSlope, out lastEntryAvwapOpenReclaimed);
-
-                    CaptureAnchorAvwapTelemetry(
-                        vBarsType, sessionHighBarIdx, hasReclaimedHighVwap,
-                        out lastEntryAvwapHigh, out lastEntryAvwapHighHistorical, out lastEntryAvwapHighSignalDistTicks,
-                        out lastEntryAvwapHighSlopeDropTicks, out lastEntryAvwapHighTier, out lastEntryAvwapHighSlope, out lastEntryAvwapHighReclaimed);
-
-                    CaptureAnchorAvwapTelemetry(
-                        vBarsType, sessionLowBarIdx, hasReclaimedLowVwap,
-                        out lastEntryAvwapLow, out lastEntryAvwapLowHistorical, out lastEntryAvwapLowSignalDistTicks,
-                        out lastEntryAvwapLowSlopeDropTicks, out lastEntryAvwapLowTier, out lastEntryAvwapLowSlope, out lastEntryAvwapLowReclaimed);
-
-                    lastEntryAvwapActiveAnchor = "N/A";
-                    lastEntryAvwapTier = "N/A";
-                    lastEntryAvwapSlope = "N/A";
-                    lastEntryAvwapSlopeDropTicks = 0;
-                    lastEntryAvwapSignalDistTicks = 0;
-                    lastEntryAvwapReclaimed = false;
-
-                    switch (AvwapAnchor)
-                    {
-                        case AvwapAnchorType.SessionOpen:
-                            lastEntryAvwapActiveAnchor = "OPEN";
-                            lastEntryAvwapTier = lastEntryAvwapOpenTier;
-                            lastEntryAvwapSlope = lastEntryAvwapOpenSlope;
-                            lastEntryAvwapSlopeDropTicks = lastEntryAvwapOpenSlopeDropTicks;
-                            lastEntryAvwapSignalDistTicks = lastEntryAvwapOpenSignalDistTicks;
-                            lastEntryAvwapReclaimed = lastEntryAvwapOpenReclaimed;
-                            break;
-                        case AvwapAnchorType.SessionHigh:
-                            lastEntryAvwapActiveAnchor = "HIGH";
-                            lastEntryAvwapTier = lastEntryAvwapHighTier;
-                            lastEntryAvwapSlope = lastEntryAvwapHighSlope;
-                            lastEntryAvwapSlopeDropTicks = lastEntryAvwapHighSlopeDropTicks;
-                            lastEntryAvwapSignalDistTicks = lastEntryAvwapHighSignalDistTicks;
-                            lastEntryAvwapReclaimed = lastEntryAvwapHighReclaimed;
-                            break;
-                        case AvwapAnchorType.SessionLow:
-                            lastEntryAvwapActiveAnchor = "LOW";
-                            lastEntryAvwapTier = lastEntryAvwapLowTier;
-                            lastEntryAvwapSlope = lastEntryAvwapLowSlope;
-                            lastEntryAvwapSlopeDropTicks = lastEntryAvwapLowSlopeDropTicks;
-                            lastEntryAvwapSignalDistTicks = lastEntryAvwapLowSignalDistTicks;
-                            lastEntryAvwapReclaimed = lastEntryAvwapLowReclaimed;
-                            break;
-                    }
-
-                    if (UseTradeLogging)
-                        Print(string.Format("Immediate Short Entry | EntryBar={0:yyyy-MM-dd HH:mm:ss} | B1={1:HH:mm:ss} O1={2} C1={3}",
-                            Time[0], Time[1], Open[1], Close[1]));
-
-                    double currentBidShort = GetCurrentBid();
-                    double currentAskShort = GetCurrentAsk();
-                    double currentSpreadShort = (currentAskShort > 0 && currentBidShort > 0) ? (currentAskShort - currentBidShort) / TickSize : 0;
-                    lastEntrySignalSpread = currentSpreadShort;
-                    lastEntryAvgSpread = barSpreadCount > 0 ? barSpreadSum / barSpreadCount : currentSpreadShort;
-                    lastEntryMaxSpread = barSpreadCount > 0 ? barSpreadMax : currentSpreadShort;
-                    lastEntryBookBidVol = 0;
-                    lastEntryBookAskVol = 0;
-
-                    EnterShort("MomSE");
-                }
-            }
-            #endregion
-
             #region POC History Update
             if (totalBarVol > 0)
             {
@@ -5359,10 +4704,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "Allow Long Trades", Order = 1, GroupName = "00. GLOBAL: Direction")]
         public bool AllowLongTrades { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Allow Short Trades", Order = 2, GroupName = "00. GLOBAL: Direction")]
-        public bool AllowShortTrades { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Allow BULL-DIV Trades", Order = 1, GroupName = "00b. GLOBAL: Allowed Regimes")]
@@ -5471,111 +4812,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         public bool RequireExhaustionSetup { get; set; }
 
         // ==============================================================================
-        // 03c-2: ADAPTIVE 40 RANGE FILTER
-        // ==============================================================================
-        [NinjaScriptProperty]
-        [Display(Name = "01. Use Adaptive 40 Range Filter", Order = 1, GroupName = "03c-2. ADAPTIVE 40 RANGE")]
-        public bool UseAdaptive40RangeFilter { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "02. Block LOWER-CONT + ACCEL-BUY", Order = 2, GroupName = "03c-2. ADAPTIVE 40 RANGE")]
-        public bool Block_LowerCont_AccelBuy { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "03. Block MID-RANGE + ACCEL-BUY", Order = 3, GroupName = "03c-2. ADAPTIVE 40 RANGE")]
-        public bool Block_MidRange_AccelBuy { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "04. Block NIC = 1", Order = 4, GroupName = "03c-2. ADAPTIVE 40 RANGE")]
-        public bool Block_NIC1 { get; set; }
-
-        // ==============================================================================
-        // 03c-3: ES 8-RANGE FILTER
-        // ==============================================================================
-        [NinjaScriptProperty]
-        [Display(Name = "01. Use ES 8-Range Filter", Order = 1, GroupName = "03c-3. ES 8-RANGE FILTER")]
-        public bool UseESRangeFilter { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "02. Block SESS-HIGH-BO + ACCEL-BUY (F1)", Order = 2, GroupName = "03c-3. ES 8-RANGE FILTER")]
-        public bool ES_Block_HighBO_AccelBuy { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "03. Block UPPER-FRICTION + QUIET + ACCEL-BUY (F4)", Order = 3, GroupName = "03c-3. ES 8-RANGE FILTER")]
-        public bool ES_Block_UpperFriction_Quiet_AccelBuy { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "04. Block AVWAP EXTREME Tier (F5)", Order = 4, GroupName = "03c-3. ES 8-RANGE FILTER")]
-        public bool ES_Block_AvwapExtreme { get; set; }
-
-        // ==============================================================================
-        // 03c-4: PHASE 1 BLOCKING RULES
-        // ==============================================================================
-        [NinjaScriptProperty]
-        [Display(Name = "01. Block SESS-LOW-REV (Phase1 Rule #1)", Order = 1, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
-        public bool BlockSessLowRev { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "02. Block SESS-HIGH-BO + ACTIVE + ABOVE-VAH (Phase1 Rule #2)", Order = 2, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
-        public bool BlockCeilingActiveAboveVAH { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "03. Block LOWER-CONT + BELOW-VAL + NORMAL/QUIET (W2 Rule B)", Order = 3, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
-        public bool BlockLowerContBelowValLowVol { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "04. Block SESS-HIGH-BO + AT-VAH (W2 Rule C)", Order = 4, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
-        public bool BlockCeilingAtVAH { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "05. Block LOWER-CONT + Cluster>=2 (W2 Rule F)", Order = 5, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
-        public bool BlockLowerContCluster2 { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "06. Block SESS-HIGH-BO + NORMAL + ABOVE-VAH (W3 Rule A)", Order = 6, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
-        public bool BlockCeilingNormalAboveVAH { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "07. Block EXTREME Weak Signal — Enable (Precision Filter E)", Order = 7, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
-        public bool BlockExtremeWeakSignal { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "07a. Extreme: Recency Threshold (≤)", Order = 8, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
-        public double ExtremeRecencyThreshold { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "07b. Extreme: VolZ Threshold (≥)", Order = 9, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
-        public double ExtremeVolZThreshold { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "07c. Extreme: Spike Ratio Threshold (≥)", Order = 10, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
-        public double ExtremeSpikeThreshold { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "08. Block LCA Weak Signal — Enable (Precision Filter L)", Order = 11, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
-        public bool BlockLCAWeakSignal { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "08a. LCA: ActiveDist Threshold (≤)", Order = 12, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
-        public double LCAActiveDistThreshold { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "08b. LCA: OppStack Threshold (≥)", Order = 13, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
-        public int LCAOppStackThreshold { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "08c. LCA: CDSlope Threshold (<)", Order = 14, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
-        public double LCACDSlopeThreshold { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "08d. LCA: Vol Threshold (<)", Order = 15, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
-        public int LCAVolThreshold { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "08e. LCA: Spike Ratio Threshold (<)", Order = 16, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
-        public double LCASpikeThreshold { get; set; }
-
-        // ==============================================================================
         // 03d: VALUE AREA FILTER
         // ==============================================================================
         [NinjaScriptProperty]
@@ -5643,51 +4879,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "Block Accelerating Selling", Order = 5, GroupName = "03e. DELTA VELOCITY FILTER")]
         public bool DV_BlockAcceleratingSelling { get; set; }
-
-        // ==============================================================================
-        // 03f: ADAPTIVE / PERFORMANCE GATES
-        // ==============================================================================
-        [NinjaScriptProperty]
-        [Display(Name = "Use Adaptive Volume Gate", Order = 1, GroupName = "03f. ADAPTIVE / PERFORMANCE GATES")]
-        public bool UseAdaptiveVolumeGate { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(0.0, 5.0)]
-        [Display(Name = "Adaptive Min Volume Mult", Order = 2, GroupName = "03f. ADAPTIVE / PERFORMANCE GATES")]
-        public double AdaptiveVolumeMinMultiplier { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(0.0, 10.0)]
-        [Display(Name = "Adaptive Max Volume StdDev Mult", Order = 3, GroupName = "03f. ADAPTIVE / PERFORMANCE GATES")]
-        public double AdaptiveVolumeMaxStdDevMultiplier { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Use Time-Adjusted Volume Gate", Order = 4, GroupName = "03f. ADAPTIVE / PERFORMANCE GATES")]
-        public bool UseTimeAdjustedVolumeGate { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(0.0, 5.0)]
-        [Display(Name = "Time-Adjusted Min Volume Mult", Order = 5, GroupName = "03f. ADAPTIVE / PERFORMANCE GATES")]
-        public double TimeAdjustedVolumeMinMultiplier { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Use Follow-Through Gate", Order = 6, GroupName = "03f. ADAPTIVE / PERFORMANCE GATES")]
-        public bool UseFollowThroughGate { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(0.0, 1.0)]
-        [Display(Name = "Follow-Through Min Rate", Order = 7, GroupName = "03f. ADAPTIVE / PERFORMANCE GATES")]
-        public double FollowThroughMinRate { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(1, 100)]
-        [Display(Name = "Follow-Through Min Samples", Order = 8, GroupName = "03f. ADAPTIVE / PERFORMANCE GATES")]
-        public int FollowThroughMinSamples { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(0.0, 200.0)]
-        [Display(Name = "Follow-Through Success MFE (Ticks)", Order = 9, GroupName = "03f. ADAPTIVE / PERFORMANCE GATES")]
-        public double FollowThroughMinTicks { get; set; }
 
         // ==============================================================================
         // 03g: MICROSTRUCTURE REGIME FILTER
@@ -5833,43 +5024,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "03. Enable Shadow Matrix Mode (Log Only, No Blocking)", Order = 3, GroupName = "03j. ADAPTIVE CONTEXT MATRIX")]
         public bool ShadowMatrixMode { get; set; }
-
-        // ==============================================================================
-        // 03k: RANGE BAR ADAPTATION
-        // ==============================================================================
-        [NinjaScriptProperty]
-        [Display(Name = "01. Use Range-Bar Adaptation", Order = 1, GroupName = "03k. RANGE BAR ADAPTATION")]
-        public bool UseRangeBarAdaptation { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(1.0, 600.0)]
-        [Display(Name = "02. Fast Bar Threshold (Secs)", Order = 2, GroupName = "03k. RANGE BAR ADAPTATION")]
-        public double RangeFastBarSecsThreshold { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(1.0, 600.0)]
-        [Display(Name = "03. Slow Bar Threshold (Secs)", Order = 3, GroupName = "03k. RANGE BAR ADAPTATION")]
-        public double RangeSlowBarSecsThreshold { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(0.0, 1.0)]
-        [Display(Name = "04. Min Continuation Close %", Order = 4, GroupName = "03k. RANGE BAR ADAPTATION")]
-        public double RangeContinuationCloseMinPct { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(0.0, 1.0)]
-        [Display(Name = "05. Min Strong Slow-Bar Close %", Order = 5, GroupName = "03k. RANGE BAR ADAPTATION")]
-        public double RangeStrongSlowBarCloseMinPct { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(0.0, 1.0)]
-        [Display(Name = "06. Max Prior-Bar Overlap %", Order = 6, GroupName = "03k. RANGE BAR ADAPTATION")]
-        public double RangeMaxOverlapPct { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(0.0, 1.0)]
-        [Display(Name = "07. Min Rejection Wick %", Order = 7, GroupName = "03k. RANGE BAR ADAPTATION")]
-        public double RangeMinRejectionWickPct { get; set; }
 
         [Browsable(false)]
         [XmlIgnore]
@@ -6361,6 +5515,137 @@ namespace NinjaTrader.NinjaScript.Strategies
         [PropertyEditor("NinjaTrader.Gui.Tools.TimeEditorKey")]
         [Display(Name = "Midday End", Order = 15, GroupName = "08. KEY LEVELS")]
         public DateTime KL_MiddayEnd { get; set; }
+
+        // ==============================================================================
+        // 03m: ADAPTIVE IMBALANCE RATIO
+        // ==============================================================================
+        [NinjaScriptProperty]
+        [Display(Name = "Use Adaptive Imbalance Ratio", GroupName = "03m - Adaptive Imbalance", Order = 1)]
+        public bool UseAdaptiveImbalanceRatio { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, 5.0)]
+        [Display(Name = "Adaptive Imbalance Multiplier", GroupName = "03m - Adaptive Imbalance", Order = 2)]
+        public double AdaptiveImbalanceMultiplier { get; set; }
+
+        // ==============================================================================
+        // 03l: IMBALANCE DECAY
+        // ==============================================================================
+        [NinjaScriptProperty]
+        [Display(Name = "Use Imbalance Decay", GroupName = "03l - Imbalance Decay", Order = 1)]
+        public bool UseImbalanceDecay { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.001, 1.0)]
+        [Display(Name = "Imbalance Decay Lambda", GroupName = "03l - Imbalance Decay", Order = 2)]
+        public double ImbalanceDecayLambda { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 20)]
+        [Display(Name = "Imbalance Decay Min Score", GroupName = "03l - Imbalance Decay", Order = 3)]
+        public int ImbalanceDecayMinScore { get; set; }
+
+        // ==============================================================================
+        // 03n: ABSORPTION DETECTION
+        // ==============================================================================
+        [NinjaScriptProperty]
+        [Display(Name = "Use Volume-Per-Tick Absorption", GroupName = "03n - Absorption Detection", Order = 1)]
+        public bool UseVolumePerTickAbsorption { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.5, 10.0)]
+        [Display(Name = "Absorption VPT Multiplier", GroupName = "03n - Absorption Detection", Order = 2)]
+        public double AbsorptionVPTMultiplier { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, 1.0)]
+        [Display(Name = "Absorption Max Close Pos Pct", GroupName = "03n - Absorption Detection", Order = 3)]
+        public double AbsorptionMaxClosePosPct { get; set; }
+
+        // ==============================================================================
+        // 03o: VOLUME VELOCITY
+        // ==============================================================================
+        [NinjaScriptProperty]
+        [Display(Name = "Use Volume Velocity Filter", GroupName = "03o - Volume Velocity", Order = 1)]
+        public bool UseVolumeVelocityFilter { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1.0, 10.0)]
+        [Display(Name = "Volume Velocity Max Multiplier", GroupName = "03o - Volume Velocity", Order = 2)]
+        public double VolumeVelocityMaxMultiplier { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, 1.0)]
+        [Display(Name = "Volume Velocity Min Multiplier", GroupName = "03o - Volume Velocity", Order = 3)]
+        public double VolumeVelocityMinMultiplier { get; set; }
+
+        // ==============================================================================
+        // 03p: CELL PERFORMANCE GATE
+        // ==============================================================================
+        [NinjaScriptProperty]
+        [Display(Name = "Use Cell Performance Gate", GroupName = "03p - Cell Performance", Order = 1)]
+        public bool UseCellPerformanceGate { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, 1.0)]
+        [Display(Name = "Cell Min Probability Threshold", GroupName = "03p - Cell Performance", Order = 2)]
+        public double CellMinProbabilityThreshold { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 50)]
+        [Display(Name = "Cell Min Samples", GroupName = "03p - Cell Performance", Order = 3)]
+        public int CellMinSamples { get; set; }
+
+        // ==============================================================================
+        // 03r: REGIME SEGMENTED BASELINES
+        // ==============================================================================
+        [NinjaScriptProperty]
+        [Display(Name = "Use Regime Segmented Baselines", GroupName = "03r - Regime Baselines", Order = 1)]
+        public bool UseRegimeSegmentedBaselines { get; set; }
+
+        // ==============================================================================
+        // 03s: STACK DELTA RATIO
+        // ==============================================================================
+        [NinjaScriptProperty]
+        [Display(Name = "Use Stack Delta Ratio", GroupName = "03s - Stack Delta Ratio", Order = 1)]
+        public bool UseStackDeltaRatio { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, 1.0)]
+        [Display(Name = "Min Stack Delta Ratio", GroupName = "03s - Stack Delta Ratio", Order = 2)]
+        public double MinStackDeltaRatio { get; set; }
+
+        // ==============================================================================
+        // 03q: FOLLOW-THROUGH CIRCUIT BREAKER
+        // ==============================================================================
+        [NinjaScriptProperty]
+        [Display(Name = "Use Follow-Through Circuit Breaker", GroupName = "03q - Circuit Breaker", Order = 1)]
+        public bool UseFollowThroughCircuitBreaker { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, 1.0)]
+        [Display(Name = "Circuit Breaker FT Threshold", GroupName = "03q - Circuit Breaker", Order = 2)]
+        public double CircuitBreakerFTThreshold { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 50)]
+        [Display(Name = "Circuit Breaker Min Samples", GroupName = "03q - Circuit Breaker", Order = 3)]
+        public int CircuitBreakerMinSamples { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, 5.0)]
+        [Display(Name = "Circuit Breaker Ratio Boost", GroupName = "03q - Circuit Breaker", Order = 4)]
+        public double CircuitBreakerRatioBoost { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1.0, 5.0)]
+        [Display(Name = "Circuit Breaker Volume Multiplier", GroupName = "03q - Circuit Breaker", Order = 5)]
+        public double CircuitBreakerVolumeMultiplier { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, 200.0)]
+        [Display(Name = "Follow-Through Min Ticks", GroupName = "03q - Circuit Breaker", Order = 6)]
+        public double FollowThroughMinTicks { get; set; }
 
         #endregion
     }
