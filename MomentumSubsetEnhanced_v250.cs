@@ -637,6 +637,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 BlockCeilingAtVAH = true;
                 BlockLowerContCluster2 = true;
 
+                // Week 3 Blocking Rules
+                BlockCeilingNormalAboveVAH = true;
+
                 // Value Area Filter
                 UseValueAreaFilter = false;
                 VA_AllowNoVA = true;
@@ -2609,8 +2612,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 UseAdaptive40RangeFilter, Block_LowerCont_AccelBuy, Block_MidRange_AccelBuy, Block_NIC1));
             Print(string.Format("     ES-8-RANGE: Use={0} | HighBO+AccelBuy={1} | UpperFric+Quiet+AccelBuy={2} | AvwapExtreme={3}",
                 UseESRangeFilter, ES_Block_HighBO_AccelBuy, ES_Block_UpperFriction_Quiet_AccelBuy, ES_Block_AvwapExtreme));
-            Print(string.Format("     PHASE1-RULES: BlockSessLowRev={0} | BlockCeilingActiveAboveVAH={1} | BlockLowerContBelowValLowVol={2} | BlockCeilingAtVAH={3} | BlockLowerContCluster2={4}",
-                BlockSessLowRev, BlockCeilingActiveAboveVAH, BlockLowerContBelowValLowVol, BlockCeilingAtVAH, BlockLowerContCluster2));
+            Print(string.Format("     PHASE1-RULES: BlockSessLowRev={0} | BlockCeilingActiveAboveVAH={1} | BlockLowerContBelowValLowVol={2} | BlockCeilingAtVAH={3} | BlockLowerContCluster2={4} | BlockCeilingNormalAboveVAH={5}",
+                BlockSessLowRev, BlockCeilingActiveAboveVAH, BlockLowerContBelowValLowVol, BlockCeilingAtVAH, BlockLowerContCluster2, BlockCeilingNormalAboveVAH));
 
             Print("-------------------------------------------------------------------------");
             Print(string.Format("[04] TIER A PROFILE  : ENABLED = {0} | Target Size: {1} to {2}", S3_Enable, S3_MinStackSize, S3_MaxStackSize));
@@ -3919,6 +3922,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                 {
                     if (UseTradeLogging)
                         Print("BLOCK: LOWER-CONT + Cluster>=2 blocked by W2 Rule F");
+                    s3_long_valid = false;
+                }
+
+                // W3 RULE A: Block SESS-HIGH-BO + NORMAL + ABOVE-VAH
+                if (BlockCeilingNormalAboveVAH && stackContextEnum == SessionContext.SessionHighBo && volRegimeEnum == VolatilityRegime.Normal && vaContext == ValueAreaContext.AboveVAH)
+                {
+                    if (UseTradeLogging)
+                        Print("BLOCK: SESS-HIGH-BO + NORMAL + ABOVE-VAH blocked by W3 Rule A");
                     s3_long_valid = false;
                 }
 
@@ -5449,6 +5460,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "05. Block LOWER-CONT + Cluster>=2 (W2 Rule F)", Order = 5, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
         public bool BlockLowerContCluster2 { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "06. Block SESS-HIGH-BO + NORMAL + ABOVE-VAH (W3 Rule A)", Order = 6, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
+        public bool BlockCeilingNormalAboveVAH { get; set; }
 
         // ==============================================================================
         // 03d: VALUE AREA FILTER
