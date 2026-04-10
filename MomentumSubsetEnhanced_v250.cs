@@ -1119,6 +1119,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     regimeBufferReady[r] = false;
                 }
             }
+        }
 
         private void ResetDailyStats()
         {
@@ -3675,7 +3676,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             #region Tier A Long Validation
             bool s3_long_valid = false;
-            bool longEntryTaken = false;
 
             if (S3_Enable && maxBullishStack >= S3_MinStackSize && maxBullishStack <= S3_MaxStackSize)
             {
@@ -4668,7 +4668,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                     lastEntryBookAskVol = 0;  // Placeholder pending OnMarketDepth() integration
 
                     EnterLong("MomLE");
-                    longEntryTaken = true;
                 }
             }
             #endregion
