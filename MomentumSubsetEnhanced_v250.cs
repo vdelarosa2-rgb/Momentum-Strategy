@@ -640,6 +640,20 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // Week 3 Blocking Rules
                 BlockCeilingNormalAboveVAH = true;
 
+                // Precision Filter E: EXTREME regime weak-signal gate
+                BlockExtremeWeakSignal = true;
+                ExtremeRecencyThreshold = 0.60;
+                ExtremeVolZThreshold = 5.0;
+                ExtremeSpikeThreshold = 3.8;
+
+                // Precision Filter L: LOWER-CONT + ACTIVE weak-signal gate
+                BlockLCAWeakSignal = true;
+                LCAActiveDistThreshold = -150.0;
+                LCAOppStackThreshold = 3;
+                LCACDSlopeThreshold = -9.0;
+                LCAVolThreshold = 600;
+                LCASpikeThreshold = 1.0;
+
                 // Value Area Filter
                 UseValueAreaFilter = false;
                 VA_AllowNoVA = true;
@@ -2614,6 +2628,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 UseESRangeFilter, ES_Block_HighBO_AccelBuy, ES_Block_UpperFriction_Quiet_AccelBuy, ES_Block_AvwapExtreme));
             Print(string.Format("     PHASE1-RULES: BlockSessLowRev={0} | BlockCeilingActiveAboveVAH={1} | BlockLowerContBelowValLowVol={2} | BlockCeilingAtVAH={3} | BlockLowerContCluster2={4} | BlockCeilingNormalAboveVAH={5}",
                 BlockSessLowRev, BlockCeilingActiveAboveVAH, BlockLowerContBelowValLowVol, BlockCeilingAtVAH, BlockLowerContCluster2, BlockCeilingNormalAboveVAH));
+            Print(string.Format("     PRECISION-E: BlockExtremeWeakSignal={0} | Recency<={1:F2} | VolZ>={2:F1} | Spike>={3:F1}x",
+                BlockExtremeWeakSignal, ExtremeRecencyThreshold, ExtremeVolZThreshold, ExtremeSpikeThreshold));
+            Print(string.Format("     PRECISION-L: BlockLCAWeakSignal={0} | ActiveDist<={1:F1}T | OppStack>={2} | CDSlope<{3:F1}% | Vol<{4} | Spike<{5:F2}x",
+                BlockLCAWeakSignal, LCAActiveDistThreshold, LCAOppStackThreshold, LCACDSlopeThreshold, LCAVolThreshold, LCASpikeThreshold));
 
             Print("-------------------------------------------------------------------------");
             Print(string.Format("[04] TIER A PROFILE  : ENABLED = {0} | Target Size: {1} to {2}", S3_Enable, S3_MinStackSize, S3_MaxStackSize));
@@ -3931,6 +3949,58 @@ namespace NinjaTrader.NinjaScript.Strategies
                     if (UseTradeLogging)
                         Print("BLOCK: SESS-HIGH-BO + NORMAL + ABOVE-VAH blocked by W3 Rule A");
                     s3_long_valid = false;
+                }
+
+                // PRECISION FILTER E: Block EXTREME regime weak-signal entries
+                if (BlockExtremeWeakSignal && volRegimeEnum == VolatilityRegime.Extreme)
+                {
+                    bool weakSignal = false;
+                    string filterReason = "";
+
+                    if (marketRegime == MarketRegime.BullDiv || marketRegime == MarketRegime.BearDiv)
+                    { weakSignal = true; filterReason = "CvdState=" + stateNameStr; }
+                    else if (stackRecencyLong <= ExtremeRecencyThreshold)
+                    { weakSignal = true; filterReason = "Recency=" + stackRecencyLong.ToString("F2"); }
+                    else if (volZScore >= ExtremeVolZThreshold)
+                    { weakSignal = true; filterReason = "VolZ=" + volZScore.ToString("F2"); }
+                    else if (currentVolSpikeRatio >= ExtremeSpikeThreshold)
+                    { weakSignal = true; filterReason = "Spike=" + currentVolSpikeRatio.ToString("F2") + "x"; }
+                    else if (stackContextEnum == SessionContext.SessionLowRev || stackContextEnum == SessionContext.LowerCont)
+                    { weakSignal = true; filterReason = "Context=" + GetSessionContextString(stackContextEnum); }
+
+                    if (weakSignal)
+                    {
+                        if (UseTradeLogging)
+                            Print("BLOCK: EXTREME weak signal — " + filterReason + " | Precision Filter E");
+                        s3_long_valid = false;
+                    }
+                }
+
+                // PRECISION FILTER L: Block LOWER-CONT + ACTIVE weak-signal entries
+                if (BlockLCAWeakSignal && stackContextEnum == SessionContext.LowerCont && volRegimeEnum == VolatilityRegime.Active)
+                {
+                    // Negate activeAvwapDistTicks to match log sign convention: negative when price is below Active AVWAP
+                    double activeDistBelowAvwap = -activeAvwapDistTicks;
+                    bool weakSignalL = false;
+                    string filterReasonL = "";
+
+                    if (activeDistBelowAvwap <= LCAActiveDistThreshold)
+                    { weakSignalL = true; filterReasonL = "ActiveDist=" + activeDistBelowAvwap.ToString("F1") + "T"; }
+                    else if (maxBearishStack >= LCAOppStackThreshold)
+                    { weakSignalL = true; filterReasonL = "OppStack=" + maxBearishStack; }
+                    else if (cdSlopeLog_S3_Long < LCACDSlopeThreshold)
+                    { weakSignalL = true; filterReasonL = "CDSlope=" + cdSlopeLog_S3_Long.ToString("F2") + "%"; }
+                    else if (totalBarVol < LCAVolThreshold)
+                    { weakSignalL = true; filterReasonL = "Vol=" + totalBarVol.ToString("F0"); }
+                    else if (currentVolSpikeRatio < LCASpikeThreshold)
+                    { weakSignalL = true; filterReasonL = "Spike=" + currentVolSpikeRatio.ToString("F2") + "x"; }
+
+                    if (weakSignalL)
+                    {
+                        if (UseTradeLogging)
+                            Print("BLOCK: LCA weak signal — " + filterReasonL + " | Precision Filter L");
+                        s3_long_valid = false;
+                    }
                 }
 
                 // SIGNAL QUALITY: Min Bar Duration
@@ -5464,6 +5534,46 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "06. Block SESS-HIGH-BO + NORMAL + ABOVE-VAH (W3 Rule A)", Order = 6, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
         public bool BlockCeilingNormalAboveVAH { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "07. Block EXTREME Weak Signal — Enable (Precision Filter E)", Order = 7, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
+        public bool BlockExtremeWeakSignal { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "07a. Extreme: Recency Threshold (≤)", Order = 8, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
+        public double ExtremeRecencyThreshold { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "07b. Extreme: VolZ Threshold (≥)", Order = 9, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
+        public double ExtremeVolZThreshold { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "07c. Extreme: Spike Ratio Threshold (≥)", Order = 10, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
+        public double ExtremeSpikeThreshold { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "08. Block LCA Weak Signal — Enable (Precision Filter L)", Order = 11, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
+        public bool BlockLCAWeakSignal { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "08a. LCA: ActiveDist Threshold (≤)", Order = 12, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
+        public double LCAActiveDistThreshold { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "08b. LCA: OppStack Threshold (≥)", Order = 13, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
+        public int LCAOppStackThreshold { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "08c. LCA: CDSlope Threshold (<)", Order = 14, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
+        public double LCACDSlopeThreshold { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "08d. LCA: Vol Threshold (<)", Order = 15, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
+        public int LCAVolThreshold { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "08e. LCA: Spike Ratio Threshold (<)", Order = 16, GroupName = "03c-4. PHASE 1 BLOCKING RULES")]
+        public double LCASpikeThreshold { get; set; }
 
         // ==============================================================================
         // 03d: VALUE AREA FILTER
