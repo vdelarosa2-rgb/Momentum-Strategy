@@ -3519,16 +3519,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             string sessionBucketStr = GetSessionLocationBucketString(sessionBucket);
             string spatialPairStr = GetSpatialPairLabel(sessionBucket, vaContext);
 
-            // Short-side recency uses LOW of bar for recency calculation (bearish stack position from bottom)
-            double stackRecencyShort = CalculateStackRecency((int)maxBearishStackTopTick, maxBearishStack, barHighTick, barLowTick);
-            double stackMidPriceShortCalc = (maxBearishStackTopTick - ((maxBearishStack - 1.0) / 2.0)) * TickSize;
-            double sessionPosShort = GetSessionPosition(stackMidPriceShortCalc);
-            SessionContext stackContextShortEnum = GetStackContext(sessionPosShort);
-            string stackContextShort = GetSessionContextString(stackContextShortEnum);
-            SessionLocationBucket sessionBucketShort = GetSessionLocationBucket(sessionPosShort);
-            string sessionBucketShortStr = GetSessionLocationBucketString(sessionBucketShort);
-            string spatialPairShortStr = GetSpatialPairLabel(sessionBucketShort, vaContext);
-
             double adaptiveMinVol = S3_MinVolume;
             double adaptiveMaxVol = S3_MaxVolume;
 
@@ -3557,8 +3547,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             bool improvingDeltaLong = (barDelta > prevBarDelta1) && (prevBarDelta1 > prevBarDelta2);
             bool divLong = (barDelta > prevBarDelta1);
-            bool improvingDeltaShort = (barDelta < prevBarDelta1) && (prevBarDelta1 < prevBarDelta2);
-            bool divShort = (barDelta < prevBarDelta1);
             #endregion
 
             #region CD Slope Calculations
