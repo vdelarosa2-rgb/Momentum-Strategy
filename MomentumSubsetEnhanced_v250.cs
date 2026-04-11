@@ -1,4 +1,4 @@
-// Version: 3.00 - Self-Adaptive Institutional Imbalance Engine
+// Version: 3.10 - Two-Setup Modular Strategy Mode Architecture
 #region Using declarations
 using System;
 using System.Collections.Generic;
@@ -116,10 +116,35 @@ namespace NinjaTrader.NinjaScript.Strategies
         Normal,
         Thin
     }
+
+    public enum StrategyMode
+    {
+        LegacyLongOnly,
+        BreakoutContinuation,
+        AbsorptionReversal,
+        Both
+    }
     #endregion
 
     public class MomentumSubsetEnhanced : Strategy
     {
+        private enum SetupType
+        {
+            None,
+            BreakoutContinuationLong,
+            BreakoutContinuationShort,
+            FailedBreakoutLong,
+            FailedBreakoutShort
+        }
+
+        private class SetupSignal
+        {
+            public SetupType Type { get; set; }
+            public bool IsValid { get; set; }
+            public string Reason { get; set; }
+            public string ContextFamily { get; set; }
+        }
+
         #region Constants
         // Adaptive / Performance Gate Defaults
         private const double DefaultAdaptiveVolumeMinMultiplier = 0.60;
@@ -191,6 +216,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double highestSeenPrice = 0;
         private double currentStopPrice = 0;
         private int lastTrailStep = -1;
+        private double lowestSeenPrice = 0;
 
         private double sessionStartProfit = 0.0;
         private bool dailyProfitHit = false;
@@ -268,6 +294,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         // Dedicated Daily Cluster Tracking
         private Dictionary<string, int> dailyClusterCounts = new Dictionary<string, int>();
         private Dictionary<string, double> dailyClusterPnl = new Dictionary<string, double>();
+        private Dictionary<string, int> dailySetupCounts = new Dictionary<string, int>();
+        private Dictionary<string, double> dailySetupPnl = new Dictionary<string, double>();
 
         private struct TradeResult
         {
@@ -600,6 +628,40 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double lastEntryEffectiveMinVolume;
         #endregion
 
+        #region Setup Identity & Enhanced Telemetry
+        private string lastEntrySetupType = "";
+        private string lastEntrySetupReason = "";
+        private string lastEntrySetupContextFamily = "";
+        private bool lastEntryIsInBalance = false;
+        private double lastEntryBalanceHigh = 0;
+        private double lastEntryBalanceLow = 0;
+        private double lastEntrySessionCVD = 0;
+        private double lastEntryCVDSlope = 0;
+        private bool lastEntryCVDDivergence = false;
+        private bool lastEntryTrappedTraders = false;
+        private bool lastEntryBreakoutDetected = false;
+        private double lastEntryBreakoutLevel = 0;
+        private bool lastEntryRetestHold = false;
+        #endregion
+
+        #region Balance / CVD / Retest Infrastructure
+        private int BalanceLookbackBars = 20;
+        private int BalanceMaxRangeTicks = 40;
+        private double balanceHigh = 0;
+        private double balanceLow = 0;
+        private bool isInBalance = false;
+
+        private double sessionCVD = 0;
+        private double prevSessionCVD = 0;
+        private double cvdSlope = 0;
+        private bool cvdDivergenceDetected = false;
+
+        private bool breakoutDetected = false;
+        private double breakoutLevel = 0;
+        private int breakoutDirection = 0; // +1 long, -1 short
+        private bool retestInProgress = false;
+        #endregion
+
         #region Microstructure Regime Tracking
         private Queue<double> r1kRollingBuffer = new Queue<double>();
 
@@ -631,7 +693,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 StopTargetHandling = StopTargetHandling.PerEntryExecution;
                 BarsRequiredToTrade = 40;
 
+                ActiveStrategyMode = StrategyMode.LegacyLongOnly;
                 AllowLongTrades = true;
+                AllowShortTrades = false;
 
                 AllowBullDiv = true;
                 AllowBearDiv = true;
@@ -970,6 +1034,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             lastTradeCount = 0;
             pendingTradeLog = "";
             hasPrintedSettings = false;
+            lastEntrySetupType = "";
+            lastEntrySetupReason = "";
+            lastEntrySetupContextFamily = "";
 
             prevPoc1 = 0.0;
             prevPoc2 = 0.0;
@@ -1033,6 +1100,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             breakEvenTriggered = false;
             highestSeenPrice = 0;
+            lowestSeenPrice = 0;
             currentStopPrice = 0;
             lastTrailStep = -1;
         }
@@ -1071,6 +1139,18 @@ namespace NinjaTrader.NinjaScript.Strategies
                 r1kRollingBuffer.Clear();
             rollingR1k = 0.0;
             currentMicroRegime = MicrostructureRegime.Warmup;
+
+            balanceHigh = 0;
+            balanceLow = 0;
+            isInBalance = false;
+            sessionCVD = 0;
+            prevSessionCVD = 0;
+            cvdSlope = 0;
+            cvdDivergenceDetected = false;
+            breakoutDetected = false;
+            breakoutLevel = 0;
+            breakoutDirection = 0;
+            retestInProgress = false;
         }
 
         private void ResetAdaptiveBuffers()
@@ -1133,6 +1213,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             dailyRegimePnl.Clear();
             dailyClusterCounts.Clear();
             dailyClusterPnl.Clear();
+            dailySetupCounts.Clear();
+            dailySetupPnl.Clear();
         }
 
         private void ResetNYSEValueArea()
@@ -1799,6 +1881,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             string clusterKey = clusterCount >= 2 ? "Clustered" : "Isolated";
             UpdateDailyDictionary(dailyClusterCounts, dailyClusterPnl, clusterKey, pnlTicks);
+            string setupKey = string.IsNullOrEmpty(lastEntrySetupType) ? "Legacy" : lastEntrySetupType;
+            UpdateDailyDictionary(dailySetupCounts, dailySetupPnl, setupKey, pnlTicks);
 
             // Update cell performance
             string cellKeyForUpdate = lastEntryContext + "_" + lastEntryVolRegime;
@@ -2415,6 +2499,229 @@ namespace NinjaTrader.NinjaScript.Strategies
             return true;
         }
 
+        private bool PassGlobalFilters(bool volRegimeGateAllowed, bool passMinBarSecs, bool passClimaxFilter)
+        {
+            if (!IsWithinActiveSession(Time[0]))
+                return false;
+
+            if (!CooldownWindowComplete(Time[0]))
+                return false;
+
+            if (dailyProfitHit)
+                return false;
+
+            if (Position.MarketPosition != MarketPosition.Flat)
+                return false;
+
+            if (UseVolatilityRegimeGate && !volRegimeGateAllowed)
+                return false;
+
+            if (!IsMicroRegimeAllowed())
+                return false;
+
+            if (!passMinBarSecs)
+                return false;
+
+            if (!passClimaxFilter)
+                return false;
+
+            return true;
+        }
+
+        private void UpdateBalanceDetection()
+        {
+            if (CurrentBar < BalanceLookbackBars + 1)
+            {
+                isInBalance = false;
+                return;
+            }
+
+            int barsAgo = BalanceLookbackBars;
+            balanceHigh = MAX(High, barsAgo)[1];
+            balanceLow = MIN(Low, barsAgo)[1];
+            double balanceRangeTicks = (balanceHigh - balanceLow) / TickSize;
+            isInBalance = balanceRangeTicks <= BalanceMaxRangeTicks;
+        }
+
+        private void UpdateCVDTracking(double barDelta)
+        {
+            if (currentTradingDay != sessionIterator.GetTradingDay(Time[0]))
+            {
+                prevSessionCVD = sessionCVD;
+                sessionCVD = 0;
+            }
+
+            double priorSessionCvd = sessionCVD;
+            sessionCVD += barDelta;
+            cvdSlope = sessionCVD - priorSessionCvd;
+
+            bool priceNewHigh = CurrentBar > 2 && High[1] >= MAX(High, 20)[2];
+            bool priceNewLow = CurrentBar > 2 && Low[1] <= MIN(Low, 20)[2];
+            bool cvdNotConfirmingHigh = priceNewHigh && sessionCVD <= prevSessionCVD;
+            bool cvdNotConfirmingLow = priceNewLow && sessionCVD >= prevSessionCVD;
+            cvdDivergenceDetected = cvdNotConfirmingHigh || cvdNotConfirmingLow;
+            prevSessionCVD = priorSessionCvd;
+        }
+
+        private SetupSignal EvaluateBreakoutContinuationLong(
+            SessionLocationBucket sessionBucket,
+            SessionContext stackContextEnum,
+            AdaptiveContextFamily adaptiveContextFamily,
+            int maxBullishStack,
+            double validBullishRatio,
+            double domVolLongPercent,
+            double barDelta,
+            double normDeltaPct,
+            double escapeLongTicks,
+            bool activeAnchorReclaimed,
+            bool passDeltaVelocityFilter,
+            bool passVolVelocity,
+            int bullClusterCount,
+            double stackDeltaRatio,
+            double s3AbsPct,
+            bool antiChasePass,
+            bool slopePass,
+            bool negativeDeltaAcceptancePass)
+        {
+            var signal = new SetupSignal { Type = SetupType.BreakoutContinuationLong, IsValid = false, Reason = "No continuation setup", ContextFamily = GetAdaptiveContextFamilyString(adaptiveContextFamily) };
+
+            bool contextPass =
+                sessionBucket == SessionLocationBucket.Upper
+                || sessionBucket == SessionLocationBucket.Ceiling
+                || stackContextEnum == SessionContext.UpperCont
+                || stackContextEnum == SessionContext.SessionHighBo
+                || adaptiveContextFamily == AdaptiveContextFamily.WithGrainContinuation
+                || adaptiveContextFamily == AdaptiveContextFamily.CeilingBreakout
+                || adaptiveContextFamily == AdaptiveContextFamily.UpperValueFriction;
+            if (!contextPass) return signal;
+
+            bool triggerPass = maxBullishStack >= S3_MinStackSize
+                && validBullishRatio >= Math.Max(1.0, ImbalanceRatio)
+                && domVolLongPercent >= (S3_UseMinDomVol ? S3_MinDomVol : 0)
+                && (barDelta >= 0 || normDeltaPct >= S3_MinNormalizedDeltaPct)
+                && (!S3_UseMaxEscape || escapeLongTicks <= S3_MaxEscape)
+                && (!S3_UseMinEscape || escapeLongTicks >= S3_MinEscape);
+            if (!triggerPass) { signal.Reason = "Continuation trigger failed"; return signal; }
+
+            bool confirmationPass = activeAnchorReclaimed || bullClusterCount >= 1 || passDeltaVelocityFilter || passVolVelocity || !UseStackDeltaRatio || stackDeltaRatio >= MinStackDeltaRatio;
+            if (!confirmationPass) { signal.Reason = "Continuation confirmation failed"; return signal; }
+
+            bool invalid = !antiChasePass || !slopePass || !negativeDeltaAcceptancePass || (UseAdaptiveContextMatrix && adaptiveContextFamily == AdaptiveContextFamily.CeilingBreakout && s3AbsPct >= AdaptiveCeilingTrapAbsorptionPct && barDelta < 0);
+            if (invalid) { signal.Reason = "Continuation invalidated"; return signal; }
+
+            signal.IsValid = true;
+            signal.Reason = "Breakout continuation confirmed";
+            return signal;
+        }
+
+        private SetupSignal EvaluateFailedBreakoutReversalLong(
+            SessionLocationBucket sessionBucket,
+            ValueAreaContext vaContext,
+            AdaptiveContextFamily adaptiveContextFamily,
+            bool keyLevelGatePass,
+            bool activeAnchorReclaimed,
+            double s3AbsPct,
+            double s3AbsMult,
+            double signalVpt,
+            double vptBaselineValue,
+            double vptStdDevValue,
+            bool isClimax,
+            bool isExhaustion,
+            bool improvingDeltaLong,
+            bool divLong,
+            double barDelta,
+            double escapeLongTicks,
+            double pMig1,
+            bool revUp,
+            double domVolLongPercent,
+            double validBullishRatio)
+        {
+            var signal = new SetupSignal { Type = SetupType.FailedBreakoutLong, IsValid = false, Reason = "No reversal setup", ContextFamily = GetAdaptiveContextFamilyString(adaptiveContextFamily) };
+
+            bool contextPass =
+                sessionBucket == SessionLocationBucket.Basement
+                || sessionBucket == SessionLocationBucket.Lower
+                || vaContext == ValueAreaContext.BelowVAL
+                || vaContext == ValueAreaContext.AtVAL
+                || adaptiveContextFamily == AdaptiveContextFamily.BasementValueReclaim
+                || adaptiveContextFamily == AdaptiveContextFamily.BelowValueReversal;
+            if (!contextPass) return signal;
+
+            bool triggerPass = keyLevelGatePass && (
+                (s3AbsPct >= S3_MinAbsorptionPct && s3AbsMult >= S3_MinAbsorptionMultiple)
+                || (signalVpt > vptBaselineValue + AbsorptionVPTMultiplier * vptStdDevValue)
+                || isClimax
+                || isExhaustion
+                || improvingDeltaLong
+                || divLong
+                || activeAnchorReclaimed);
+            if (!triggerPass) { signal.Reason = "Reversal trigger failed"; return signal; }
+
+            bool confirmationPass = activeAnchorReclaimed
+                && (pMig1 > 0 || revUp)
+                && barDelta > 0
+                && (improvingDeltaLong || divLong)
+                && (!S3_UseMaxEscape || escapeLongTicks <= S3_MaxEscape);
+            if (!confirmationPass) { signal.Reason = "Reversal confirmation failed"; return signal; }
+
+            bool invalid = !activeAnchorReclaimed || !keyLevelGatePass || escapeLongTicks > AdaptiveCeilingMaxEscape || (domVolLongPercent < 2.0 && validBullishRatio < 2.0);
+            if (invalid) { signal.Reason = "Reversal invalidated"; return signal; }
+
+            signal.IsValid = true;
+            signal.Reason = "Failed breakout reversal confirmed";
+            return signal;
+        }
+
+        private SetupSignal EvaluateBreakoutContinuationShort(
+            SessionLocationBucket sessionBucket,
+            AdaptiveContextFamily adaptiveContextFamily,
+            int maxBearishStack,
+            double validBearishRatio,
+            double domVolShortPercent,
+            double barDelta,
+            double escapeShortTicks)
+        {
+            var signal = new SetupSignal { Type = SetupType.BreakoutContinuationShort, IsValid = false, Reason = "No short continuation setup", ContextFamily = GetAdaptiveContextFamilyString(adaptiveContextFamily) };
+
+            bool contextPass = sessionBucket == SessionLocationBucket.Basement || sessionBucket == SessionLocationBucket.Lower;
+            bool triggerPass = maxBearishStack >= S3_MinStackSize
+                && validBearishRatio >= Math.Max(1.0, ImbalanceRatio)
+                && domVolShortPercent >= (S3_UseMinDomVol ? S3_MinDomVol : 0)
+                && barDelta <= 0
+                && (!S3_UseMaxEscape || escapeShortTicks <= S3_MaxEscape);
+
+            if (contextPass && triggerPass)
+            {
+                signal.IsValid = true;
+                signal.Reason = "Breakout continuation short confirmed";
+            }
+
+            return signal;
+        }
+
+        private SetupSignal EvaluateFailedBreakoutReversalShort(
+            SessionLocationBucket sessionBucket,
+            ValueAreaContext vaContext,
+            bool keyLevelGatePass,
+            bool trappedBuyers,
+            bool activeAnchorReclaimed,
+            double barDelta,
+            double escapeShortTicks)
+        {
+            var signal = new SetupSignal { Type = SetupType.FailedBreakoutShort, IsValid = false, Reason = "No short reversal setup", ContextFamily = "FailedBreakoutShort" };
+            bool contextPass = sessionBucket == SessionLocationBucket.Upper || sessionBucket == SessionLocationBucket.Ceiling || vaContext == ValueAreaContext.AtVAH || vaContext == ValueAreaContext.AboveVAH;
+            bool triggerPass = keyLevelGatePass && trappedBuyers && barDelta <= 0;
+            bool confirmationPass = activeAnchorReclaimed && (!S3_UseMaxEscape || escapeShortTicks <= S3_MaxEscape);
+
+            if (contextPass && triggerPass && confirmationPass)
+            {
+                signal.IsValid = true;
+                signal.Reason = "Failed breakout short reversal confirmed";
+            }
+
+            return signal;
+        }
+
         private void PruneRecentBullStacks()
         {
             if (recentBullStacks == null || recentBullStacks.Count == 0)
@@ -2452,6 +2759,39 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (roundedDesired >= maxValidStop)
                 return false;
+
+            currentStopPrice = roundedDesired;
+            SetStopLoss(CalculationMode.Price, currentStopPrice);
+            return true;
+        }
+
+        private bool TryUpdateDynamicStopShort(double desiredStopPrice)
+        {
+            if (Position.MarketPosition != MarketPosition.Short)
+                return false;
+
+            double roundedDesired = Instrument.MasterInstrument.RoundToTickSize(desiredStopPrice);
+
+            double currentPrice = Close[0];
+            if (State == State.Realtime)
+            {
+                double ask = GetCurrentAsk();
+                if (ask > 0) currentPrice = ask;
+            }
+
+            double minValidStop = Instrument.MasterInstrument.RoundToTickSize(currentPrice + (SpreadCushionTicks * TickSize));
+
+            if (currentStopPrice <= 0)
+                currentStopPrice = Position.AveragePrice + (StopLossTicks * TickSize);
+
+            if (roundedDesired >= currentStopPrice)
+                return false;
+
+            if (roundedDesired <= currentPrice || roundedDesired <= 0 || roundedDesired <= (currentPrice - (SpreadCushionTicks * TickSize)))
+                return false;
+
+            if (roundedDesired < minValidStop)
+                roundedDesired = minValidStop;
 
             currentStopPrice = roundedDesired;
             SetStopLoss(CalculationMode.Price, currentStopPrice);
@@ -2558,9 +2898,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (!UseTradeLogging) return;
 
             Print("=========================================================================");
-            Print("SETTINGS LOG | MomentumSubsetEnhanced v3.00 — Self-Adaptive");
+            Print("SETTINGS LOG | MomentumSubsetEnhanced v3.10 — Two-Setup Modular");
             Print("=========================================================================");
 
+            Print(string.Format("[00]  STRATEGY MODE  : {0} | Long={1} | Short={2}", ActiveStrategyMode, AllowLongTrades, AllowShortTrades));
             Print(string.Format("[00]  DIRECTION      : Long={0}", AllowLongTrades));
             Print(string.Format("[00b] REGIMES        : BullDiv={0} | BearDiv={1} | BullConv={2} | BearConv={3}", AllowBullDiv, AllowBearDiv, AllowBullConv, AllowBearConv));
             Print(string.Format("[01]  COOLDOWN       : Use={0} | Minutes={1}", UseCooldown, CooldownMinutes));
@@ -2650,6 +2991,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                     key, dailyClusterCounts[key], dailyClusterPnl[key], avgPnl));
             }
 
+            Print("[SETUP BREAKDOWN]");
+            foreach (var key in dailySetupCounts.Keys)
+            {
+                double avgPnl = dailySetupCounts[key] > 0 ? dailySetupPnl[key] / dailySetupCounts[key] : 0;
+                Print(string.Format("     {0}: {1} trades | Total: {2:F0}T | Avg: {3:F1}T",
+                    key, dailySetupCounts[key], dailySetupPnl[key], avgPnl));
+            }
+
             double ftRate, ftAvgMfe, ftAvgMae;
             int ftSampleCount;
             GetFollowThroughStats(out ftRate, out ftAvgMfe, out ftAvgMae, out ftSampleCount);
@@ -2687,6 +3036,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             Print(string.Format("     [ENTRY-SNAPSHOT] Context: {0} | SessionAxis: {1} | VolRegime: {2} | Recency: {3:F2} | SessPos: {4:F2} | VolZ: {5:F2} | Cluster: {6}",
                 lastEntryContext, lastEntrySessionAxis, lastEntryVolRegime, lastEntryStackRecency, lastEntrySessionPos, lastEntryVolZScore, lastEntryClusterCount));
+            Print(string.Format("     [SETUP] Type: {0} | Reason: {1} | ContextFamily: {2}",
+                lastEntrySetupType, lastEntrySetupReason, lastEntrySetupContextFamily));
 
             Print(string.Format("     [LOCATION-RAW] SigPx: {0:F2} | SessLow: {1:F2} ({2}) | SessMid: {3:F2} ({4}) | SessHigh: {5:F2} ({6}) | Bucket: {7} | SessionCtx: {8} | VAContext: {9} | Pair: {10}",
                 lastEntrySignalPrice,
@@ -2706,6 +3057,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 lastEntryNearestKeyLevel, lastEntryNearestKeyLevelDistTicks, lastEntryKeyLevelGatePass, lastEntryKeyLevelSummary));
             Print(string.Format("     [KEY-LEVEL-FLAGS] VWAP={0} PDH={1} PDL={2} IBH={3} IBL={4} PMH={5} PML={6} POC={7}",
                 lastEntryNearVWAP, lastEntryNearPDH, lastEntryNearPDL, lastEntryNearIBH, lastEntryNearIBL, lastEntryNearPMH, lastEntryNearPML, lastEntryNearPOC));
+            Print(string.Format("     [BALANCE] InBalance: {0} | BalHigh: {1:F2} | BalLow: {2:F2} | BalRange: {3:F1}T",
+                lastEntryIsInBalance, lastEntryBalanceHigh, lastEntryBalanceLow, (lastEntryBalanceHigh - lastEntryBalanceLow) / TickSize));
+            Print(string.Format("     [CVD] SessionCVD: {0:F0} | Slope: {1:F1} | Divergence: {2}",
+                lastEntrySessionCVD, lastEntryCVDSlope, lastEntryCVDDivergence));
 
             Print(string.Format("     [LIQUIDITY-RAW] Range: {0:F1}T | Secs: {1:F2} | R/1k: {2:F1}T | BarDelta: {3:F0} | Delta/Tick: {4:F1} | Delta/Vol: {5:F1}% | Escape: {6:F1}T | DomVol: {7:F1}% | Ratio: {8:F1}",
                 lastEntrySignalBarRangeTicks, lastEntrySignalBarSecs, lastEntryRangePer1kVolumeTicks, lastEntryBarDelta, lastEntryDeltaPerTick, lastEntryDeltaPctOfVolume,
@@ -2850,6 +3205,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 highestSeenPrice = averagePrice;
                 currentStopPrice = averagePrice - (StopLossTicks * TickSize);
             }
+            else if (marketPosition == MarketPosition.Short)
+            {
+                lowestSeenPrice = averagePrice;
+                currentStopPrice = averagePrice + (StopLossTicks * TickSize);
+            }
         }
 
         protected override void OnMarketData(MarketDataEventArgs marketDataUpdate)
@@ -2984,6 +3344,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             #endregion
 
             #region Position Management (Break-Even / Trailing Stop)
+            bool isReversalSetup = !string.IsNullOrEmpty(lastEntrySetupType) && lastEntrySetupType.Contains("FailedBreakout");
+            double activeBreakEvenTriggerTicks = isReversalSetup ? Math.Max(1.0, BreakEvenTriggerTicks * 0.5) : BreakEvenTriggerTicks;
+            bool allowRunnerTrail = !isReversalSetup || lastEntryAbsMult >= 2.0;
+
             if (Position.MarketPosition == MarketPosition.Long && !dailyProfitHit)
             {
                 if (High[0] > highestSeenPrice)
@@ -2992,7 +3356,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 double mfeTicks = (highestSeenPrice - Position.AveragePrice) / TickSize;
 
                 // Break-Even Logic
-                if (UseBreakEven && !breakEvenTriggered && mfeTicks >= BreakEvenTriggerTicks)
+                if (UseBreakEven && !breakEvenTriggered && mfeTicks >= activeBreakEvenTriggerTicks)
                 {
                     double bePrice = Position.AveragePrice + (BreakEvenOffsetTicks * TickSize);
 
@@ -3007,7 +3371,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
 
                 // Trailing Stop Logic
-                if (UseAutoTrail && mfeTicks >= AutoTrailTriggerTicks)
+                if (UseAutoTrail && allowRunnerTrail && mfeTicks >= AutoTrailTriggerTicks)
                 {
                     int steps = (int)Math.Floor((mfeTicks - AutoTrailTriggerTicks) / AutoTrailFrequencyTicks);
                     if (steps > lastTrailStep)
@@ -3021,6 +3385,42 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                             if (UseTradeLogging)
                                 Print(string.Format("{0} | TRAIL STEP {1} | MFE: {2:F1}T | Stop moved to: {3}",
+                                    Time[0].ToString("HH:mm:ss"), steps, mfeTicks, currentStopPrice));
+                        }
+                    }
+                }
+            }
+            else if (Position.MarketPosition == MarketPosition.Short && !dailyProfitHit)
+            {
+                if (lowestSeenPrice <= 0 || Low[0] < lowestSeenPrice)
+                    lowestSeenPrice = Low[0];
+
+                double mfeTicks = (Position.AveragePrice - lowestSeenPrice) / TickSize;
+
+                if (UseBreakEven && !breakEvenTriggered && mfeTicks >= activeBreakEvenTriggerTicks)
+                {
+                    double bePrice = Position.AveragePrice - (BreakEvenOffsetTicks * TickSize);
+                    if (TryUpdateDynamicStopShort(bePrice))
+                    {
+                        breakEvenTriggered = true;
+                        if (UseTradeLogging)
+                            Print(string.Format("{0} | BE TRIGGERED (SHORT) | MFE: {1:F1}T | Stop moved to: {2}",
+                                Time[0].ToString("HH:mm:ss"), mfeTicks, currentStopPrice));
+                    }
+                }
+
+                if (UseAutoTrail && allowRunnerTrail && mfeTicks >= AutoTrailTriggerTicks)
+                {
+                    int steps = (int)Math.Floor((mfeTicks - AutoTrailTriggerTicks) / AutoTrailFrequencyTicks);
+                    if (steps > lastTrailStep)
+                    {
+                        double activeMfeLevelTicks = AutoTrailTriggerTicks + (steps * AutoTrailFrequencyTicks);
+                        double newStopPrice = Position.AveragePrice - ((activeMfeLevelTicks - AutoTrailStopLossTicks) * TickSize);
+                        if (TryUpdateDynamicStopShort(newStopPrice))
+                        {
+                            lastTrailStep = steps;
+                            if (UseTradeLogging)
+                                Print(string.Format("{0} | TRAIL STEP {1} (SHORT) | MFE: {2:F1}T | Stop moved to: {3}",
                                     Time[0].ToString("HH:mm:ss"), steps, mfeTicks, currentStopPrice));
                         }
                     }
@@ -3508,12 +3908,19 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             double domVolLongPercent = 0;
             if (totalBarVol > 0) domVolLongPercent = ((validAvgBullishImbVol * maxBullishStack) / totalBarVol) * 100.0;
+            double domVolShortPercent = 0;
+            if (totalBarVol > 0) domVolShortPercent = ((validAvgBearishImbVol * maxBearishStack) / totalBarVol) * 100.0;
 
             double escapeLongTicks = (Close[1] - (maxBullishStackTopTick * TickSize)) / TickSize;
+            double bearishStackBottomTick = maxBearishStackTopTick - maxBearishStack + 1.0;
+            double escapeShortTicks = ((bearishStackBottomTick * TickSize) - Close[1]) / TickSize;
             double stackMidTickLong = maxBullishStackTopTick - ((maxBullishStack - 1.0) / 2.0);
+            double stackMidTickShort = maxBearishStackTopTick - ((maxBearishStack - 1.0) / 2.0);
 
             double stackPosLong = DefaultSessionPosition;
             if (endTick > startTick) stackPosLong = (stackMidTickLong - startTick) / (double)(endTick - startTick);
+            double stackPosShort = DefaultSessionPosition;
+            if (endTick > startTick) stackPosShort = (stackMidTickShort - startTick) / (double)(endTick - startTick);
 
             int cAdvLong = bullishImbalanceCount - bearishImbalanceCount;
             double dAdvLong = bullishImbalanceDeltaSum - bearishImbalanceDeltaSum;
@@ -3532,12 +3939,19 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             double stackRecencyLong = CalculateStackRecency((int)maxBullishStackTopTick, maxBullishStack, barHighTick, barLowTick);
             double stackMidPriceLongCalc = (maxBullishStackTopTick - ((maxBullishStack - 1.0) / 2.0)) * TickSize;
+            double stackMidPriceShortCalc = (maxBearishStackTopTick - ((maxBearishStack - 1.0) / 2.0)) * TickSize;
             double sessionPosLong = GetSessionPosition(stackMidPriceLongCalc);
+            double sessionPosShort = GetSessionPosition(stackMidPriceShortCalc);
             SessionContext stackContextEnum = GetStackContext(sessionPosLong);
+            SessionContext stackContextShortEnum = GetStackContext(sessionPosShort);
             string stackContextLong = GetSessionContextString(stackContextEnum);
+            string stackContextShort = GetSessionContextString(stackContextShortEnum);
             SessionLocationBucket sessionBucket = GetSessionLocationBucket(sessionPosLong);
+            SessionLocationBucket sessionBucketShort = GetSessionLocationBucket(sessionPosShort);
             string sessionBucketStr = GetSessionLocationBucketString(sessionBucket);
+            string sessionBucketShortStr = GetSessionLocationBucketString(sessionBucketShort);
             string spatialPairStr = GetSpatialPairLabel(sessionBucket, vaContext);
+            string spatialPairShortStr = GetSpatialPairLabel(sessionBucketShort, vaContext);
 
             double adaptiveMinVol = S3_MinVolume;
             double adaptiveMaxVol = S3_MaxVolume;
@@ -3600,6 +4014,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             bool constantVolumeBarMode = IsConstantVolumeBarEnvironment(totalBarVol);
             AdaptiveContextFamily adaptiveContextFamily = GetAdaptiveContextFamily(sessionBucket, vaContext);
+            AdaptiveContextFamily adaptiveContextFamilyShort = GetAdaptiveContextFamily(sessionBucketShort, vaContext);
             AdaptiveRuleProfile adaptiveProfile = GetAdaptiveRuleProfile(adaptiveContextFamily, constantVolumeBarMode);
             bool disableBarVolumeDependentFilters = constantVolumeBarMode && AutoDisableBarVolumeFiltersOnConstantVolume;
             if (UseAdaptiveContextMatrix && adaptiveProfile.DisableBarVolumeDependentFilters)
@@ -3669,6 +4084,26 @@ namespace NinjaTrader.NinjaScript.Strategies
             bool keyLevelGatePass = EvaluateKeyLevelGate(
                 nearVWAP, nearPDH, nearPDL, nearIBH, nearIBL, nearPMH, nearPML, nearPOC,
                 deltaPctOfVolume, absorptionStrongForLevel, Time[1], sessionBucket);
+
+            UpdateBalanceDetection();
+            UpdateCVDTracking(barDelta);
+
+            if (isInBalance && !breakoutDetected && Math.Abs(escapeLongTicks) > 0)
+            {
+                breakoutDetected = true;
+                breakoutDirection = barDelta >= 0 ? 1 : -1;
+                breakoutLevel = breakoutDirection > 0 ? balanceHigh : balanceLow;
+                retestInProgress = false;
+            }
+            else if (breakoutDetected)
+            {
+                if (breakoutDirection > 0)
+                    retestInProgress = Close[1] <= breakoutLevel && Close[1] >= breakoutLevel - (4 * TickSize);
+                else if (breakoutDirection < 0)
+                    retestInProgress = Close[1] >= breakoutLevel && Close[1] <= breakoutLevel + (4 * TickSize);
+            }
+
+            bool trappedBuyers = (barDelta > 0) && (sessionPosLong > 0.9) && (escapeLongTicks <= 0) && (totalBarVol > 0 && (s3_highZoneVol / totalBarVol > 0.3));
 
             string adaptiveRuleSummary = "";
             string matrixProofState = "MATRIX-OFF";
@@ -4429,12 +4864,122 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             bool cooldownOkEval = CooldownWindowComplete(Time[0]);
             bool validLongSignal = s3_long_valid && cooldownOkEval;
+
+            bool passGlobalFiltersForModules = PassGlobalFilters(volRegimeGateAllowed, passMinBarSecs, passClimaxFilter);
+            bool continuationAntiChasePass = !(deltaPctOfVolume > 0 || domVolLongPercent > 10.0);
+            bool continuationSlopePass = !(activeAnchorIdx > 0 && activeHistoricalAvwap > 0 && activeAvwapSlopeDownTicks >= AvwapSlopeVetoTicks);
+            bool continuationNegativeDeltaAcceptancePass = !(deltaPctOfVolume <= -8.0 && pocPosition < 0.30 && validBullishRatio < 5.0);
+
+            SetupSignal selectedSetupSignal = new SetupSignal { Type = SetupType.None, IsValid = false, Reason = "", ContextFamily = "" };
+            bool routedLongSignal = false;
+            bool routedShortSignal = false;
+
+            switch (ActiveStrategyMode)
+            {
+                case StrategyMode.LegacyLongOnly:
+                    routedLongSignal = validLongSignal;
+                    selectedSetupSignal = new SetupSignal
+                    {
+                        Type = SetupType.BreakoutContinuationLong,
+                        IsValid = routedLongSignal,
+                        Reason = routedLongSignal ? "Legacy s3_long_valid path" : "Legacy s3_long_valid blocked",
+                        ContextFamily = GetAdaptiveContextFamilyString(adaptiveContextFamily)
+                    };
+                    break;
+
+                case StrategyMode.BreakoutContinuation:
+                    if (passGlobalFiltersForModules)
+                    {
+                        var bcLong = EvaluateBreakoutContinuationLong(
+                            sessionBucket, stackContextEnum, adaptiveContextFamily, maxBullishStack, validBullishRatio, domVolLongPercent, barDelta, normDeltaPct,
+                            escapeLongTicks, activeAnchorReclaimed, passDeltaVelocityFilter, lastEntryPassVolVelocity, bullClusterCount, stackDeltaRatio, s3_absPct,
+                            continuationAntiChasePass, continuationSlopePass, continuationNegativeDeltaAcceptancePass);
+                        var bcShort = EvaluateBreakoutContinuationShort(
+                            sessionBucketShort, adaptiveContextFamilyShort, maxBearishStack, validBearishRatio, domVolShortPercent, barDelta, escapeShortTicks);
+
+                        if (AllowLongTrades && bcLong.IsValid)
+                        {
+                            routedLongSignal = true;
+                            selectedSetupSignal = bcLong;
+                        }
+                        else if (AllowShortTrades && bcShort.IsValid)
+                        {
+                            routedShortSignal = true;
+                            selectedSetupSignal = bcShort;
+                        }
+                    }
+                    break;
+
+                case StrategyMode.AbsorptionReversal:
+                    if (passGlobalFiltersForModules)
+                    {
+                        var revLong = EvaluateFailedBreakoutReversalLong(
+                            sessionBucket, vaContext, adaptiveContextFamily, keyLevelGatePass, activeAnchorReclaimed, s3_absPct, s3_absMult, signalVPT, vptBaseline, vptStdDev,
+                            isClimax, isExhaustion, improvingDeltaLong, divLong, barDelta, escapeLongTicks, pMig1, revUp, domVolLongPercent, validBullishRatio);
+                        var revShort = EvaluateFailedBreakoutReversalShort(
+                            sessionBucketShort, vaContext, keyLevelGatePass, trappedBuyers, activeAnchorReclaimed, barDelta, escapeShortTicks);
+
+                        if (AllowLongTrades && revLong.IsValid)
+                        {
+                            routedLongSignal = true;
+                            selectedSetupSignal = revLong;
+                        }
+                        else if (AllowShortTrades && revShort.IsValid)
+                        {
+                            routedShortSignal = true;
+                            selectedSetupSignal = revShort;
+                        }
+                    }
+                    break;
+
+                case StrategyMode.Both:
+                    if (passGlobalFiltersForModules)
+                    {
+                        var revLong = EvaluateFailedBreakoutReversalLong(
+                            sessionBucket, vaContext, adaptiveContextFamily, keyLevelGatePass, activeAnchorReclaimed, s3_absPct, s3_absMult, signalVPT, vptBaseline, vptStdDev,
+                            isClimax, isExhaustion, improvingDeltaLong, divLong, barDelta, escapeLongTicks, pMig1, revUp, domVolLongPercent, validBullishRatio);
+                        var revShort = EvaluateFailedBreakoutReversalShort(
+                            sessionBucketShort, vaContext, keyLevelGatePass, trappedBuyers, activeAnchorReclaimed, barDelta, escapeShortTicks);
+
+                        if (AllowLongTrades && revLong.IsValid)
+                        {
+                            routedLongSignal = true;
+                            selectedSetupSignal = revLong;
+                        }
+                        else if (AllowShortTrades && revShort.IsValid)
+                        {
+                            routedShortSignal = true;
+                            selectedSetupSignal = revShort;
+                        }
+                        else
+                        {
+                            var bcLong = EvaluateBreakoutContinuationLong(
+                                sessionBucket, stackContextEnum, adaptiveContextFamily, maxBullishStack, validBullishRatio, domVolLongPercent, barDelta, normDeltaPct,
+                                escapeLongTicks, activeAnchorReclaimed, passDeltaVelocityFilter, lastEntryPassVolVelocity, bullClusterCount, stackDeltaRatio, s3_absPct,
+                                continuationAntiChasePass, continuationSlopePass, continuationNegativeDeltaAcceptancePass);
+                            var bcShort = EvaluateBreakoutContinuationShort(
+                                sessionBucketShort, adaptiveContextFamilyShort, maxBearishStack, validBearishRatio, domVolShortPercent, barDelta, escapeShortTicks);
+
+                            if (AllowLongTrades && bcLong.IsValid)
+                            {
+                                routedLongSignal = true;
+                                selectedSetupSignal = bcLong;
+                            }
+                            else if (AllowShortTrades && bcShort.IsValid)
+                            {
+                                routedShortSignal = true;
+                                selectedSetupSignal = bcShort;
+                            }
+                        }
+                    }
+                    break;
+            }
             #endregion
 
             #region Entry Execution
             if (Position.MarketPosition == MarketPosition.Flat)
             {
-                if (AllowLongTrades && validLongSignal)
+                if (AllowLongTrades && routedLongSignal)
                 {
                     // Capture Entry Snapshot - Existing Fields
                     lastEntryContext = stackContextLong;
@@ -4585,6 +5130,19 @@ namespace NinjaTrader.NinjaScript.Strategies
                     lastEntryNearPML = nearPML;
                     lastEntryNearPOC = nearPOC;
                     lastEntryKeyLevelGatePass = keyLevelGatePass;
+                    lastEntrySetupType = selectedSetupSignal.Type.ToString();
+                    lastEntrySetupReason = selectedSetupSignal.Reason;
+                    lastEntrySetupContextFamily = selectedSetupSignal.ContextFamily;
+                    lastEntryIsInBalance = isInBalance;
+                    lastEntryBalanceHigh = balanceHigh;
+                    lastEntryBalanceLow = balanceLow;
+                    lastEntrySessionCVD = sessionCVD;
+                    lastEntryCVDSlope = cvdSlope;
+                    lastEntryCVDDivergence = cvdDivergenceDetected;
+                    lastEntryTrappedTraders = trappedBuyers;
+                    lastEntryBreakoutDetected = breakoutDetected;
+                    lastEntryBreakoutLevel = breakoutLevel;
+                    lastEntryRetestHold = retestInProgress;
 
                     // Build Trade Log
                     string localTradeLog = "";
@@ -4678,6 +5236,45 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                     EnterLong("MomLE");
                 }
+                else if (AllowShortTrades && routedShortSignal)
+                {
+                    lastEntryContext = stackContextShort;
+                    lastEntrySessionAxis = sessionBucketShortStr;
+                    lastEntrySpatialPair = spatialPairShortStr;
+                    lastEntryVolRegime = volRegime;
+                    lastEntrySessionPos = sessionPosShort;
+                    lastEntrySignalPrice = Close[1];
+                    lastEntryBarDelta = barDelta;
+                    lastEntryNormDeltaPct = normDeltaPct;
+                    lastEntryEscapeTicks = escapeShortTicks;
+                    lastEntryDomVolPercent = domVolShortPercent;
+                    lastEntryValidBullishRatio = validBearishRatio == double.MaxValue ? 999.0 : validBearishRatio;
+                    lastEntrySetupType = selectedSetupSignal.Type.ToString();
+                    lastEntrySetupReason = selectedSetupSignal.Reason;
+                    lastEntrySetupContextFamily = selectedSetupSignal.ContextFamily;
+                    lastEntryIsInBalance = isInBalance;
+                    lastEntryBalanceHigh = balanceHigh;
+                    lastEntryBalanceLow = balanceLow;
+                    lastEntrySessionCVD = sessionCVD;
+                    lastEntryCVDSlope = cvdSlope;
+                    lastEntryCVDDivergence = cvdDivergenceDetected;
+                    lastEntryTrappedTraders = trappedBuyers;
+                    lastEntryBreakoutDetected = breakoutDetected;
+                    lastEntryBreakoutLevel = breakoutLevel;
+                    lastEntryRetestHold = retestInProgress;
+
+                    if (UseTradeLogging)
+                    {
+                        pendingTradeLog = string.Format("SigBar: {0} | Entry: {1} | SHORT ({2}) | SigPx: {3:F2} | Setup: {4}",
+                            Time[1].ToString("yyyy-MM-dd HH:mm:ss"),
+                            Time[0].ToString("yyyy-MM-dd HH:mm:ss"),
+                            ActiveStrategyMode,
+                            Close[1],
+                            lastEntrySetupType);
+                    }
+
+                    EnterShort("MomSE");
+                }
             }
             #endregion
             } // closes S3 long if
@@ -4698,8 +5295,16 @@ namespace NinjaTrader.NinjaScript.Strategies
         // 00-03: GLOBAL SETTINGS
         // ==============================================================================
         [NinjaScriptProperty]
+        [Display(Name = "Strategy Mode", Order = 0, GroupName = "00. GLOBAL: Direction")]
+        public StrategyMode ActiveStrategyMode { get; set; }
+
+        [NinjaScriptProperty]
         [Display(Name = "Allow Long Trades", Order = 1, GroupName = "00. GLOBAL: Direction")]
         public bool AllowLongTrades { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Allow Short Trades", Order = 2, GroupName = "00. GLOBAL: Direction")]
+        public bool AllowShortTrades { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Allow BULL-DIV Trades", Order = 1, GroupName = "00b. GLOBAL: Allowed Regimes")]
