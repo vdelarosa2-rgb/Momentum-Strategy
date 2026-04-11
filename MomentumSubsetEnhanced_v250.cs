@@ -2537,8 +2537,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             int barsAgo = BalanceLookbackBars;
-            balanceHigh = MAX(High, barsAgo)[1];
-            balanceLow = MIN(Low, barsAgo)[1];
+            balanceHigh = MAX(High, barsAgo)[0];
+            balanceLow = MIN(Low, barsAgo)[0];
             double balanceRangeTicks = (balanceHigh - balanceLow) / TickSize;
             isInBalance = balanceRangeTicks <= BalanceMaxRangeTicks;
         }
@@ -2555,12 +2555,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             sessionCVD += barDelta;
             cvdSlope = sessionCVD - priorSessionCvd;
 
-            bool priceNewHigh = CurrentBar > 2 && High[1] >= MAX(High, 20)[2];
-            bool priceNewLow = CurrentBar > 2 && Low[1] <= MIN(Low, 20)[2];
+            bool priceNewHigh = CurrentBar > 2 && High[1] >= MAX(High, BalanceLookbackBars)[2];
+            bool priceNewLow = CurrentBar > 2 && Low[1] <= MIN(Low, BalanceLookbackBars)[2];
             bool cvdNotConfirmingHigh = priceNewHigh && sessionCVD <= prevSessionCVD;
             bool cvdNotConfirmingLow = priceNewLow && sessionCVD >= prevSessionCVD;
             cvdDivergenceDetected = cvdNotConfirmingHigh || cvdNotConfirmingLow;
-            prevSessionCVD = priorSessionCvd;
         }
 
         private SetupSignal EvaluateBreakoutContinuationLong(
@@ -2664,7 +2663,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 && (!S3_UseMaxEscape || escapeLongTicks <= S3_MaxEscape);
             if (!confirmationPass) { signal.Reason = "Reversal confirmation failed"; return signal; }
 
-            bool invalid = !activeAnchorReclaimed || !keyLevelGatePass || escapeLongTicks > AdaptiveCeilingMaxEscape || (domVolLongPercent < 2.0 && validBullishRatio < 2.0);
+            bool invalid = !activeAnchorReclaimed || !keyLevelGatePass || (S3_UseMaxEscape && escapeLongTicks > S3_MaxEscape) || (domVolLongPercent < 2.0 && validBullishRatio < 2.0);
             if (invalid) { signal.Reason = "Reversal invalidated"; return signal; }
 
             signal.IsValid = true;
@@ -2787,7 +2786,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (roundedDesired >= currentStopPrice)
                 return false;
 
-            if (roundedDesired <= currentPrice || roundedDesired <= 0 || roundedDesired <= (currentPrice - (SpreadCushionTicks * TickSize)))
+            if (roundedDesired <= currentPrice || roundedDesired <= 0)
                 return false;
 
             if (roundedDesired < minValidStop)
@@ -3344,7 +3343,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             #endregion
 
             #region Position Management (Break-Even / Trailing Stop)
-            bool isReversalSetup = !string.IsNullOrEmpty(lastEntrySetupType) && lastEntrySetupType.Contains("FailedBreakout");
+            bool isReversalSetup =
+                lastEntrySetupType == SetupType.FailedBreakoutLong.ToString()
+                || lastEntrySetupType == SetupType.FailedBreakoutShort.ToString();
             double activeBreakEvenTriggerTicks = isReversalSetup ? Math.Max(1.0, BreakEvenTriggerTicks * 0.5) : BreakEvenTriggerTicks;
             bool allowRunnerTrail = !isReversalSetup || lastEntryAbsMult >= 2.0;
 
@@ -4088,7 +4089,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             UpdateBalanceDetection();
             UpdateCVDTracking(barDelta);
 
-            if (isInBalance && !breakoutDetected && Math.Abs(escapeLongTicks) > 0)
+            if (isInBalance && !breakoutDetected && Math.Abs(escapeLongTicks) >= 2.0)
             {
                 breakoutDetected = true;
                 breakoutDirection = barDelta >= 0 ? 1 : -1;
@@ -4866,7 +4867,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             bool validLongSignal = s3_long_valid && cooldownOkEval;
 
             bool passGlobalFiltersForModules = PassGlobalFilters(volRegimeGateAllowed, passMinBarSecs, passClimaxFilter);
-            bool continuationAntiChasePass = !(deltaPctOfVolume > 0 || domVolLongPercent > 10.0);
+            bool continuationAntiChasePass = adaptiveContextFamily != AdaptiveContextFamily.CeilingBreakout || !(deltaPctOfVolume > 0 || domVolLongPercent > 10.0);
             bool continuationSlopePass = !(activeAnchorIdx > 0 && activeHistoricalAvwap > 0 && activeAvwapSlopeDownTicks >= AvwapSlopeVetoTicks);
             bool continuationNegativeDeltaAcceptancePass = !(deltaPctOfVolume <= -8.0 && pocPosition < 0.30 && validBullishRatio < 5.0);
 
