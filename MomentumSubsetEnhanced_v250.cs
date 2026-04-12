@@ -607,6 +607,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         private MicrostructureRegime currentMicroRegime = MicrostructureRegime.Warmup;
         private double lastEntryRollingR1k = 0.0;
         private string lastEntryMicroRegime = "WARMUP";
+        private bool lastEntryShockThinOverride = false;
+        private double lastEntryShockThinR1k = 0.0;
+        private double lastEntryShockThinSecs = 0.0;
+        private string lastEntryRollingMicroRegime = "WARMUP";
         #endregion
 
         #region OnStateChange
@@ -660,13 +664,18 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 // Microstructure Regime Filter
                 EnableRegimeFilter = false;
-                R1kRollingWindowBars = 20;  // Default: 20 bars (good for 22-range); use 30 for 40-range bars
-                RegimeDenseThreshold = 150.0;
-                RegimeThinThreshold = 300.0;
+                R1kRollingWindowBars = 18;
+                RegimeDenseThreshold = 100.0;
+                RegimeThinThreshold = 200.0;
                 AllowDenseRegime = true;
                 AllowNormalMicroRegime = true;
-                AllowThinRegime = true;
+                AllowThinRegime = false;
                 AllowWarmupRegime = false;
+
+                // Shock-Thin Override
+                UseShockThinOverride = true;
+                ShockThinR1kThreshold = 180.0;
+                ShockThinMaxBarSecs = 10.0;
 
                 // Climax/Exhaustion Filter
                 UseClimaxFilter = false;
@@ -1912,10 +1921,29 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
-        private bool IsMicroRegimeAllowed()
+        private bool IsShockThinBar(double r1k, double barSecs)
+        {
+            if (!UseShockThinOverride)
+                return false;
+
+            if (r1k <= 0 || barSecs <= 0)
+                return false;
+
+            return r1k >= ShockThinR1kThreshold && barSecs <= ShockThinMaxBarSecs;
+        }
+
+        private MicrostructureRegime GetEffectiveMicroRegime(double r1k, double barSecs)
+        {
+            if (IsShockThinBar(r1k, barSecs))
+                return MicrostructureRegime.Thin;
+
+            return currentMicroRegime;
+        }
+
+        private bool IsMicroRegimeAllowed(MicrostructureRegime regime)
         {
             if (!EnableRegimeFilter) return true;
-            switch (currentMicroRegime)
+            switch (regime)
             {
                 case MicrostructureRegime.Dense:  return AllowDenseRegime;
                 case MicrostructureRegime.Normal: return AllowNormalMicroRegime;
@@ -1923,6 +1951,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 case MicrostructureRegime.Warmup: return AllowWarmupRegime;
                 default: return true; // Fallback for any future regime values not yet enumerated
             }
+        }
+
+        private bool IsMicroRegimeAllowed()
+        {
+            return IsMicroRegimeAllowed(currentMicroRegime);
         }
         #endregion
 
@@ -2590,8 +2623,19 @@ namespace NinjaTrader.NinjaScript.Strategies
                 KL_RequireDeltaAgreement, KL_RequireAbsorptionForReversal, KL_AvoidMiddayChop));
             Print(string.Format("     SPREAD TELEMETRY: Enabled (SignalSpread logged per trade; BookDepth pending OnMarketDepth() integration)"));
             Print(string.Format("     BAR-REGIME TEL  : Enabled (per-bar R1k+VolZ logged on every RTH bar for regime calibration)"));
-            Print(string.Format("     MICRO-REGIME    : Enable={0} | Lookback={1} | Dense<{2:F1} | Thin>{3:F1} | AllowDense={4} | AllowNormal={5} | AllowThin={6} | AllowWarmup={7}",
-                EnableRegimeFilter, R1kRollingWindowBars, RegimeDenseThreshold, RegimeThinThreshold, AllowDenseRegime, AllowNormalMicroRegime, AllowThinRegime, AllowWarmupRegime));
+            Print(string.Format(
+                "     MICRO-REGIME    : Enable={0} | Lookback={1} | Dense<{2:F1} | Thin>{3:F1} | AllowDense={4} | AllowNormal={5} | AllowThin={6} | AllowWarmup={7} | ShockThin={8} (R1k>={9:F1} & Secs<={10:F2})",
+                EnableRegimeFilter,
+                R1kRollingWindowBars,
+                RegimeDenseThreshold,
+                RegimeThinThreshold,
+                AllowDenseRegime,
+                AllowNormalMicroRegime,
+                AllowThinRegime,
+                AllowWarmupRegime,
+                UseShockThinOverride,
+                ShockThinR1kThreshold,
+                ShockThinMaxBarSecs));
 
             Print("-------------------------------------------------------------------------");
             Print(string.Format("[04] TIER A PROFILE  : ENABLED = {0} | Target Size: {1} to {2}", S3_Enable, S3_MinStackSize, S3_MaxStackSize));
@@ -2739,11 +2783,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Print("     [SHADOW] Full Engine Verdict: " + ((lastEntryPreMatrixPass && lastEntryMatrixVerdict) ? "PASS" : "BLOCK"));
             }
 
-            Print(string.Format("     [ENTRY-ADAPTIVE] Vol: {0:F0} | Base: {1:F0} {2} | StdDev: {3:F0} | PassRegime: {4} | Spike: {5:F2}x",
-                lastEntryTotalBarVol, lastEntryUsingRegimeBaseline ? lastEntryRegimeBaseline : lastEntryAdaptiveVolBase,
-                lastEntryUsingRegimeBaseline ? "(REGIME)" : "(GLOBAL)",
-                lastEntryUsingRegimeBaseline ? lastEntryRegimeStdDev : lastEntryAdaptiveVolStdDev,
-                passRegime, lastEntryVolumeSpikeRatio));
+            Print(string.Format("     [ENTRY-ADAPTIVE] Vol: {0:F0} | Base: {1:F0} | StdDev: {2:F0} | PassRegime: {3} | Spike: {4:F2}x",
+                lastEntryTotalBarVol, lastEntryAdaptiveVolBase, lastEntryAdaptiveVolStdDev, passRegime, lastEntryVolumeSpikeRatio));
 
             Print(string.Format("     [ENTRY-FT] FTRate: {0:P0} | AvgMFE: {1:F1}T | AvgMAE: {2:F1}T | Samples: {3}",
                 lastEntryFollowThroughRate, lastEntryAvgMfe, lastEntryFtAvgMae, lastEntryFtSampleCount));
@@ -2751,14 +2792,18 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print(string.Format("     [VOL-REGIME] Regime: {0} | ZScore: {1:F2} | GateEnabled: {2} | GateAllowed: {3}",
                 lastEntryVolRegime, lastEntryVolZScore, UseVolatilityRegimeGate, lastEntryVolRegimeGateAllowed));
 
-            Print(string.Format("     [REGIME-BASELINE] Using: {0} | RegimeBase: {1:F0} | RegimeStdDev: {2:F0} | GlobalBase: {3:F0} | GlobalStdDev: {4:F0} | RegimeReady: {5}",
-                lastEntryUsingRegimeBaseline ? "REGIME" : "GLOBAL",
-                lastEntryRegimeBaseline, lastEntryRegimeStdDev,
-                lastEntryAdaptiveVolBase, lastEntryAdaptiveVolStdDev,
-                lastEntryUsingRegimeBaseline));
-
-            Print(string.Format("     [REGIME] RollR1k={0:F1} | Regime={1} | Thresholds={2:F1}/{3:F1}",
-                lastEntryRollingR1k, lastEntryMicroRegime, RegimeDenseThreshold, RegimeThinThreshold));
+            Print(string.Format(
+                "     [REGIME] RollR1k={0:F1} | RollRegime={1} | Effective={2} | Thresholds={3:F1}/{4:F1} | ShockThin={5} | CurR1k={6:F1} | SigSecs={7:F2} | ShockRule=({8:F1} & {9:F2}s)",
+                lastEntryRollingR1k,
+                lastEntryRollingMicroRegime,
+                lastEntryMicroRegime,
+                RegimeDenseThreshold,
+                RegimeThinThreshold,
+                lastEntryShockThinOverride,
+                lastEntryShockThinR1k,
+                lastEntryShockThinSecs,
+                ShockThinR1kThreshold,
+                ShockThinMaxBarSecs));
 
             Print(string.Format("     [CLIMAX-EXHAUST] IsClimax: {0} | PrevClimax: {1} | IsExhaust: {2} | ClimaxScore: {3:F2} | ExhaustScore: {4:F2} | PrevVol: {5:F0} | CurVol: {6:F0} | PassClimax: {7} | PassExhaust: {8}",
                 lastEntryBarIsClimax, lastEntryPrevBarWasClimax, lastEntryBarIsExhaustion, lastEntryClimaxScore, lastEntryExhaustionScore,
@@ -3157,17 +3202,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             #region Calculate Volatility Regime & Z-Score
             VolatilityRegime volRegimeEnum = GetVolatilityRegime(totalBarVol);
             string volRegime = GetVolatilityRegimeString(volRegimeEnum);
-            double effectiveVolBaseline = adaptiveVolumeBaseline;
-            double effectiveVolStdDev = adaptiveVolumeStdDev;
-            bool usingRegimeBaseline = false;
-            if (UseRegimeSegmentedBaselines && regimeBufferReady.ContainsKey(volRegimeEnum) && regimeBufferReady[volRegimeEnum])
-            {
-                var regimeBaseline = GetRegimeBaseline(volRegimeEnum);
-                effectiveVolBaseline = regimeBaseline.mean;
-                effectiveVolStdDev = regimeBaseline.stdDev;
-                usingRegimeBaseline = true;
-            }
-            double volZScore = adaptiveReady ? GetZScore(totalBarVol, effectiveVolBaseline, effectiveVolStdDev) : 0;
+            double volZScore = adaptiveReady ? GetZScore(totalBarVol, adaptiveVolumeBaseline, adaptiveVolumeStdDev) : 0;
             bool volRegimeGateAllowed = IsVolatilityRegimeAllowed(volRegimeEnum);
             #endregion
 
@@ -3682,14 +3717,17 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (IsWithinNYSESession(Time[1]))
                 UpdateMicrostructureRegime(rangePer1kVolumeTicks);
 
+            MicrostructureRegime effectiveMicroRegime = GetEffectiveMicroRegime(rangePer1kVolumeTicks, signalBarSecs);
+            bool shockThinNow = IsShockThinBar(rangePer1kVolumeTicks, signalBarSecs);
+
             if (UseTradeLogging && adaptiveReady && IsWithinNYSESession(Time[1]))
             {
                 double barRegimeSessPos = GetSessionPosition(Close[1]);
                 string barRegimeContext = GetSessionContextString(GetStackContext(barRegimeSessPos));
-                Print(string.Format("[BAR-REGIME] Time={0:yyyy-MM-dd HH:mm:ss} | R1k={1:F1} | VolZ={2:F2} | BarVol={3:F0} | Range={4:F1}T | Secs={5:F2} | Delta={6:F0} | NormDelta={7:F1}% | SessPos={8:F2} | Context={9} | Momentum={10} | RollR1k={11:F1} | Regime={12}",
+                Print(string.Format("[BAR-REGIME] Time={0:yyyy-MM-dd HH:mm:ss} | R1k={1:F1} | VolZ={2:F2} | BarVol={3:F0} | Range={4:F1}T | Secs={5:F2} | Delta={6:F0} | NormDelta={7:F1}% | SessPos={8:F2} | Context={9} | Momentum={10} | RollR1k={11:F1} | RollRegime={12} | EffRegime={13} | ShockThin={14}",
                     Time[1], rangePer1kVolumeTicks, volZScore, totalBarVol, signalBarRangeTicks, signalBarSecs,
                     barDelta, normDeltaPct, barRegimeSessPos, barRegimeContext, GetDeltaMomentumString(currentDeltaMomentum),
-                    rollingR1k, GetMicroRegimeString(currentMicroRegime)));
+                    rollingR1k, GetMicroRegimeString(currentMicroRegime), GetMicroRegimeString(effectiveMicroRegime), shockThinNow));
             }
             #endregion
 
@@ -3883,11 +3921,16 @@ namespace NinjaTrader.NinjaScript.Strategies
                     s3_long_valid = false;
 
                 // MICROSTRUCTURE REGIME GATE
-                if (!IsMicroRegimeAllowed())
+                if (!IsMicroRegimeAllowed(effectiveMicroRegime))
                 {
                     if (UseTradeLogging)
-                        Print(string.Format("[REGIME-BLOCK] Regime={0} | RollR1k={1:F1} | Signal skipped",
-                            GetMicroRegimeString(currentMicroRegime), rollingR1k));
+                        Print(string.Format("[REGIME-BLOCK] RollRegime={0} | EffectiveRegime={1} | RollR1k={2:F1} | CurR1k={3:F1} | SigSecs={4:F2} | ShockThin={5} | Signal skipped",
+                            GetMicroRegimeString(currentMicroRegime),
+                            GetMicroRegimeString(effectiveMicroRegime),
+                            rollingR1k,
+                            rangePer1kVolumeTicks,
+                            signalBarSecs,
+                            shockThinNow));
                     s3_long_valid = false;
                 }
 
@@ -3969,9 +4012,19 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
 
                 // REGIME SEGMENTED BASELINES (03r) — telemetry
-                lastEntryRegimeBaseline = effectiveVolBaseline;
-                lastEntryRegimeStdDev = effectiveVolStdDev;
-                lastEntryUsingRegimeBaseline = usingRegimeBaseline;
+                lastEntryUsingRegimeBaseline = false;
+                lastEntryRegimeBaseline = adaptiveVolumeBaseline;
+                lastEntryRegimeStdDev = adaptiveVolumeStdDev;
+                if (UseRegimeSegmentedBaselines)
+                {
+                    var regRB = GetRegimeBaseline(volRegimeEnum);
+                    if (regimeBufferReady.ContainsKey(volRegimeEnum) && regimeBufferReady[volRegimeEnum])
+                    {
+                        lastEntryRegimeBaseline = regRB.mean;
+                        lastEntryRegimeStdDev = regRB.stdDev;
+                        lastEntryUsingRegimeBaseline = true;
+                    }
+                }
 
                 // STACK DELTA RATIO (03s)
                 double stackDeltaRatio = bullishImbalanceDeltaSum / Math.Max(1.0, Math.Abs(barDelta));
@@ -4479,7 +4532,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                     // Microstructure regime telemetry
                     lastEntryRollingR1k = rollingR1k;
-                    lastEntryMicroRegime = GetMicroRegimeString(currentMicroRegime);
+                    lastEntryRollingMicroRegime = GetMicroRegimeString(currentMicroRegime);
+                    lastEntryMicroRegime = GetMicroRegimeString(effectiveMicroRegime);
+                    lastEntryShockThinOverride = shockThinNow;
+                    lastEntryShockThinR1k = rangePer1kVolumeTicks;
+                    lastEntryShockThinSecs = signalBarSecs;
 
                     // Session context & signal quality gate telemetry
                     lastEntrySessionContextGateAllowed = IsSessionContextAllowed(stackContextEnum);
@@ -4913,6 +4970,20 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "Allow Warmup Regime", Order = 8, GroupName = "03g. MICROSTRUCTURE REGIME FILTER")]
         public bool AllowWarmupRegime { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Use Shock-Thin Override", Order = 9, GroupName = "03g. MICROSTRUCTURE REGIME FILTER")]
+        public bool UseShockThinOverride { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, 10000.0)]
+        [Display(Name = "Shock-Thin R1k >=", Order = 10, GroupName = "03g. MICROSTRUCTURE REGIME FILTER")]
+        public double ShockThinR1kThreshold { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, 300.0)]
+        [Display(Name = "Shock-Thin Max Secs <=", Order = 11, GroupName = "03g. MICROSTRUCTURE REGIME FILTER")]
+        public double ShockThinMaxBarSecs { get; set; }
 
         // ==============================================================================
         // 03h: ANCHORED VWAP FILTER (4-Tier Engine)
