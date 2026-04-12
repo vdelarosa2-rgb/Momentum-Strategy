@@ -313,6 +313,17 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double lastEntryFollowThroughRate = 0;
         private double lastEntryAvgMfe = 0;
         private int lastEntryClusterCount = 0;
+        
+        // ===============================
+        // FOLLOW-THROUGH TELEMETRY
+        // ===============================
+        private double lastEntryStackPrice = 0.0;
+        private double lastEntryPrice = 0.0;
+        private int lastEntryBarIndex = -1;
+
+        private double lastEntryFT1 = 0.0;
+        private double lastEntryFT2 = 0.0;
+        private double lastEntryStackDistance = 0.0;
 
         // Adaptive & Perf Snapshots
         private double lastEntryAdaptiveVolBase = 0;
@@ -2728,6 +2739,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print(""); 
             Print(string.Format("TRADE LOG | RESULT: {0} ({1} Ticks / ${2:F2}) | MAE: {3} Ticks | MFE: {4} Ticks | ENTRY: {5}", 
                 rOut, Math.Round(pTicks), pDollars, Math.Round(mTicks), Math.Round(fTicks), pendingTradeLog));
+            Print(string.Format(
+                "     [STACK-FT] Dist={0:F1}T | FT1={1:F1}T | FT2={2:F1}T",
+                lastEntryStackDistance,
+                lastEntryFT1,
+                lastEntryFT2));
 
             Print(string.Format("     [ENTRY-SNAPSHOT] Context: {0} | SessionAxis: {1} | VolRegime: {2} | Recency: {3:F2} | SessPos: {4:F2} | VolZ: {5:F2} | Cluster: {6}",
                 lastEntryContext, lastEntrySessionAxis, lastEntryVolRegime, lastEntryStackRecency, lastEntrySessionPos, lastEntryVolZScore, lastEntryClusterCount));
@@ -2889,6 +2905,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                 lastClosedTradeHighestSeenPrice = highestSeenPrice;
                 ResetTradeManagementState();
                 SetStopLoss(CalculationMode.Ticks, StopLossTicks);
+
+                // ===============================
+                // RESET FOLLOW-THROUGH TELEMETRY
+                // ===============================
+                lastEntryFT1 = 0.0;
+                lastEntryFT2 = 0.0;
+                lastEntryStackDistance = 0.0;
+                lastEntryBarIndex = -1;
             }
             else if (marketPosition == MarketPosition.Long)
             {
@@ -4667,6 +4691,15 @@ namespace NinjaTrader.NinjaScript.Strategies
                     }
 
                     pendingTradeLog = localTradeLog.Replace("{ENTRY_TIME}", Time[0].ToString("yyyy-MM-dd HH:mm:ss"));
+
+                    // ===============================
+                    // STACK TELEMETRY CAPTURE
+                    // ===============================
+                    // IMPORTANT: Replace Close[0] with the proper stack anchor if available later.
+                    lastEntryStackPrice = Close[0];
+                    lastEntryPrice = Close[0];
+                    lastEntryBarIndex = CurrentBar;
+                    lastEntryStackDistance = Math.Abs(lastEntryPrice - lastEntryStackPrice);
                     
                     // Capture AVWAP snapshots for Telemetry logging
                     CaptureAnchorAvwapTelemetry(
@@ -4738,6 +4771,18 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
             #endregion
             } // closes S3 long if
+
+            // ===============================
+            // FOLLOW-THROUGH CALCULATION
+            // ===============================
+            if (lastEntryBarIndex >= 0)
+            {
+                int barsSinceEntry = CurrentBar - lastEntryBarIndex;
+                // 1-bar FT
+                if (barsSinceEntry == 1) { lastEntryFT1 = Close[0] - lastEntryPrice; }
+                // 2-bar FT
+                if (barsSinceEntry == 2) { lastEntryFT2 = Close[0] - lastEntryPrice; }
+            }
 
             #region POC History Update
             if (totalBarVol > 0)
