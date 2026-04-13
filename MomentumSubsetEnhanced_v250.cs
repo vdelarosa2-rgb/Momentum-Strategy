@@ -325,6 +325,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double lastEntryFT2 = 0.0;
         private double lastEntryStackDistance = 0.0;
 
+        // Latched closed-trade stack follow-through telemetry
+        private double lastClosedTradeFT1 = 0.0;
+        private double lastClosedTradeFT2 = 0.0;
+        private double lastClosedTradeStackDistance = 0.0;
+
         // Adaptive & Perf Snapshots
         private double lastEntryAdaptiveVolBase = 0;
         private double lastEntryAdaptiveVolStdDev = 0;
@@ -1029,6 +1034,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             lastClosedTradeMaxTrailStep = -1;
             lastClosedTradeFinalStopPrice = 0;
             lastClosedTradeHighestSeenPrice = 0;
+            lastClosedTradeFT1 = 0;
+            lastClosedTradeFT2 = 0;
+            lastClosedTradeStackDistance = 0;
 
             // Reset climax tracking
             prevBarVolume = 0;
@@ -2741,9 +2749,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 rOut, Math.Round(pTicks), pDollars, Math.Round(mTicks), Math.Round(fTicks), pendingTradeLog));
             Print(string.Format(
                 "     [STACK-FT] Dist={0:F1}T | FT1={1:F1}T | FT2={2:F1}T",
-                lastEntryStackDistance,
-                lastEntryFT1,
-                lastEntryFT2));
+                lastClosedTradeStackDistance,
+                lastClosedTradeFT1,
+                lastClosedTradeFT2));
 
             Print(string.Format("     [ENTRY-SNAPSHOT] Context: {0} | SessionAxis: {1} | VolRegime: {2} | Recency: {3:F2} | SessPos: {4:F2} | VolZ: {5:F2} | Cluster: {6}",
                 lastEntryContext, lastEntrySessionAxis, lastEntryVolRegime, lastEntryStackRecency, lastEntrySessionPos, lastEntryVolZScore, lastEntryClusterCount));
@@ -2907,11 +2915,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 SetStopLoss(CalculationMode.Ticks, StopLossTicks);
 
                 // ===============================
-                // RESET FOLLOW-THROUGH TELEMETRY
+                // LATCH FOLLOW-THROUGH TELEMETRY FOR CLOSED-TRADE LOGGING
                 // ===============================
-                lastEntryFT1 = 0.0;
-                lastEntryFT2 = 0.0;
-                lastEntryStackDistance = 0.0;
+                lastClosedTradeFT1 = lastEntryFT1;
+                lastClosedTradeFT2 = lastEntryFT2;
+                lastClosedTradeStackDistance = lastEntryStackDistance;
                 lastEntryBarIndex = -1;
             }
             else if (marketPosition == MarketPosition.Long)
@@ -4695,11 +4703,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                     // ===============================
                     // STACK TELEMETRY CAPTURE
                     // ===============================
-                    // IMPORTANT: Replace Close[0] with the proper stack anchor if available later.
-                    lastEntryStackPrice = Close[0];
+                    lastEntryStackPrice = bullStackTopPrice;
                     lastEntryPrice = Close[0];
                     lastEntryBarIndex = CurrentBar;
-                    lastEntryStackDistance = Math.Abs(lastEntryPrice - lastEntryStackPrice);
+                    lastEntryStackDistance = Math.Abs(lastEntryPrice - lastEntryStackPrice) / TickSize;
+                    lastEntryFT1 = 0.0;
+                    lastEntryFT2 = 0.0;
                     
                     // Capture AVWAP snapshots for Telemetry logging
                     CaptureAnchorAvwapTelemetry(
